@@ -8,6 +8,7 @@ import AppToast from '../AppToast.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
+import { TAP_TARGET } from '../ui/recipes.js';
 
 // The Radar (beta) Studio panel (spec 32, Pattern P4-read + P9): renders the opt-in
 // beta gate, the ranked scored signal feed, and the compact query editor. Covers every
@@ -38,6 +39,12 @@ const engageCancelMock = vi.fn(() => Promise.resolve({ ok: true }));
 const engageUndoMock = vi.fn(() => Promise.resolve({ ok: true }));
 const engageCommunityRecheckMock = vi.fn(() => Promise.resolve({ ok: true }));
 const radarTriageMock = vi.fn(() => Promise.resolve({ ok: true }));
+// Steering (2026-09-25): "Not relevant" rides the Undo toast (radarRestore); deleting a search
+// from a signal's query chip bulk-dismisses that search's rows (radarTriageBulk).
+const radarRestoreMock = vi.fn(() => Promise.resolve({ ok: true, restored: 1 }));
+const radarTriageBulkMock = vi.fn(() => Promise.resolve({ ok: true, dismissed: 1 }));
+// Relevance plan 1e: the By-search view's tuner lines (apply / dismiss a proposal, undo a change).
+const radarTuneMock = vi.fn(() => Promise.resolve({ ok: true }));
 const radarBacklogTriageMock = vi.fn(() => Promise.resolve({ ok: true }));
 // R5 piece 2: record a copy-draft posted by hand.
 const radarMarkCopyPostedMock = vi.fn(() => Promise.resolve({ ok: true, source: 'hackernews', externalId: 'h2', postedUrl: null }));
@@ -49,7 +56,7 @@ const markPostedMock = vi.fn(() => Promise.resolve({ ok: true }));
 // canned finding so the LintPanel renders on the reply surface.
 const lintMock = vi.fn(() => Promise.resolve({ ok: true, clean: false, warnings: 1, truncated: false, findings: [{ rule: 'ai-tell', match: 'game-changer', hint: 'avoid AI hype', severity: 'warning', index: 0 }] }));
 
-vi.mock('../../lib/api.js', () => ({
+vi.mock('../../lib/api.js', async (importOriginal) => { const real = await importOriginal(); return {
   // The "Needs you" strip names the active client in its wrong-account line, the same words the
   // autonomy ledger uses. One client is enough here; the strip's own suite covers the copy.
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme' }, activeClientId: 'acme' }),
@@ -92,21 +99,20 @@ vi.mock('../../lib/api.js', () => ({
   radarGeoReset: (...a) => radarGeoResetMock(...a),
   radarDraftComparison: (...a) => radarDraftComparisonMock(...a),
   radarTriage: (...a) => radarTriageMock(...a),
+  radarRestore: (...a) => radarRestoreMock(...a),
+  radarTriageBulk: (...a) => radarTriageBulkMock(...a),
+  radarTune: (...a) => radarTuneMock(...a),
   radarBacklogTriage: (...a) => radarBacklogTriageMock(...a),
   radarMarkCopyPosted: (...a) => radarMarkCopyPostedMock(...a),
   radarQueueReply: (...a) => radarQueueReplyMock(...a),
   radarFollowupCheck: (...a) => radarFollowupCheckMock(...a),
   markPosted: (...a) => markPostedMock(...a),
   lintText: (...a) => lintMock(...a),
-  // Issue 7: the real humanize-by-code helper, mirrored here since this suite mocks the
-  // whole module - matches app/src/lib/api.js's own implementation exactly.
-  errText: (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
-    : err?.code === 'disabled' ? t('radar.error.budget')
-      : err?.code === 'not_configured' ? t('radar.error.notConfigured')
-        : err?.code === 'timeout' ? t('error.timeout')
-          : err instanceof TypeError ? t('error.network')
-            : (err?.message || t(fallbackKey))),
-}));
+  // The REAL error helpers (the one plain path), never a stub that could drift from it.
+  errText: real.errText,
+  errAlert: real.errAlert,
+  errReason: real.errReason,
+}; });
 
 // setup.agent, as pendpost_health reports it. Default: an agent PROVEN live, because that is
 // the state the panel is designed around; the not-live states get their own cases (S5).
@@ -156,6 +162,10 @@ beforeEach(() => {
   engageUndoMock.mockClear();
   engageCommunityRecheckMock.mockClear();
   radarTriageMock.mockClear();
+  radarRestoreMock.mockClear();
+  radarTriageBulkMock.mockClear();
+  radarTuneMock.mockReset();
+  radarTuneMock.mockImplementation(() => Promise.resolve({ ok: true }));
   radarBacklogTriageMock.mockClear();
   radarMarkCopyPostedMock.mockClear();
   radarQueueReplyMock.mockClear();
@@ -374,9 +384,13 @@ describe('Radar panel (spec 32 listening seam)', () => {
     it('K3: with no agent proven live the empty state points at the header primary, never repeats it', () => {
       healthData = agentNotLive();
       feedData.items = [];
+      delete feedData.lastScan; // nothing has ever produced a result
       renderPanel();
       const card = screen.getByText('No signals yet.').closest('div');
-      expect(within(card).getByText(/scanning starts once an agent is connected \(top right\)\./i)).toBeInTheDocument();
+      // P3 polish: no positional hint ("top right" breaks at 375px, in RTL and whenever the
+      // header wraps); the header primary is the only one on the page, so the line just ends.
+      expect(within(card).getByText(/^scanning starts once an agent is connected\.$/i)).toBeInTheDocument();
+      expect(card.textContent).not.toMatch(/top right|oben rechts/i);
       expect(card.textContent).not.toMatch(/connect your agent/i);
       expect(screen.queryByText(/press scan now/i)).not.toBeInTheDocument();
       // The header primary is still the one place that says it.
@@ -386,9 +400,11 @@ describe('Radar panel (spec 32 listening seam)', () => {
     it('K3: German empty state without an agent - Du-form, umlauts, no repeated CTA', () => {
       healthData = agentNotLive();
       feedData.items = [];
+      delete feedData.lastScan;
       renderPanel({ locale: 'de-CH' });
       const card = screen.getByText('Noch keine Signale.').closest('div');
-      expect(within(card).getByText(/Das Scannen startet, sobald ein Agent verbunden ist \(oben rechts\)\./)).toBeInTheDocument();
+      expect(within(card).getByText(/^Das Scannen startet, sobald ein Agent verbunden ist\.$/)).toBeInTheDocument();
+      expect(card.textContent).not.toMatch(/oben rechts/);
       expect(card.textContent).not.toMatch(/Agent verbinden/);
     });
 
@@ -590,6 +606,31 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(region.textContent).toMatch(/your agent's note: segfault/i);
     });
 
+    // Raw-error sweep G2: t() returns the KEY itself for a missing string, so `t(...) || reason`
+    // never fell back and an unknown reason printed "radar.agent.job.reason.<x>" on the row.
+    it('an unknown failed reason reads as a plain sentence, never the raw key or code', () => {
+      feedData.jobs = [job({ state: 'failed', reason: 'brand_new_code', finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).not.toMatch(/radar\.agent\.job\.reason|brand_new_code/);
+      expect(within(region).getByText('It did not finish.')).toBeInTheDocument();
+    });
+
+    it('an unknown partial reason reads as the partial sentence, never the raw key', () => {
+      feedData.jobs = [job({ state: 'done', partial: true, reason: 'brand_new_code', accepted: 2, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).not.toMatch(/radar\.agent\.job\.reason|brand_new_code/);
+      expect(within(region).getByText('Some sources did not finish. Here is what landed.')).toBeInTheDocument();
+    });
+
+    it('an unknown reason on a plain done run says nothing rather than a raw key', () => {
+      feedData.jobs = [job({ state: 'done', reason: 'brand_new_code', accepted: 2, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).not.toMatch(/radar\.agent\.job\.reason|brand_new_code/);
+    });
+
     // J2 + K2 (fresh-eyes rounds 1 and 2, 2026-09-04): the agent's "now running ... I'll report
     // back" under a red failure read as a live promise - and with the excerpt on the closed row it
     // stayed on screen under a caption. On a CUT-OFF run (timeout / sleep / stopped) the closed
@@ -692,15 +733,26 @@ describe('Radar panel (spec 32 listening seam)', () => {
     // lanes (radarAgentScan { sources }). The degrade card says nothing about them - one failed
     // run, narrated once, one retry. A job with no owned lane keeps "Scan again" over the whole set.
     describe('C9/J1: the job row owns its failed run - lanes on the reason line, one scoped retry', () => {
+      // ONE clock per fixture. Ownership compares a lane's `at` against the job's `startedAt`
+      // (Radar.jsx ownedByJob: at >= startedAt). Taking separate `new Date()` readings for the
+      // lane stamps and for job()'s default startedAt let the clock tick 1 ms between them, so
+      // the row intermittently disowned its own lanes. The job starts a minute before its lanes
+      // are stamped - the real order (writes.mjs stamps rows as the job ends) - which also keeps
+      // later `new Date()` overrides inside a test on the owned side of the boundary.
+      const runStamps = () => {
+        const end = Date.now();
+        return { startedAt: new Date(end - 60_000).toISOString(), at: new Date(end).toISOString() };
+      };
       const runFailure = (reason, over = {}) => {
+        const { startedAt, at } = runStamps();
         configData.posting.radar.sources = { x: { scan: true }, youtube: { scan: true } };
         feedData.capabilities = { ...feedData.capabilities, x: { search: false, reply: false }, youtube: { search: false, reply: true } };
         feedData.sources = {
-          x: { ok: false, error: reason, at: new Date().toISOString() },
-          youtube: { ok: false, error: reason, at: new Date().toISOString() },
-          hackernews: { ok: true, at: new Date().toISOString() },
+          x: { ok: false, error: reason, at },
+          youtube: { ok: false, error: reason, at },
+          hackernews: { ok: true, at },
         };
-        feedData.jobs = [job({ state: 'failed', reason, sources: ['x', 'youtube', 'hackernews'], finishedAt: new Date().toISOString(), ...over })];
+        feedData.jobs = [job({ state: 'failed', reason, sources: ['x', 'youtube', 'hackernews'], startedAt, finishedAt: at, ...over })];
       };
       // K1: the retry NAMES the lanes it will rescan, never a count.
       const retryOf = (region) => within(region).getByRole('button', { name: /^retry X, YouTube$/i });
@@ -757,10 +809,11 @@ describe('Radar panel (spec 32 listening seam)', () => {
       // K1: at five or more lanes the label names the first three and counts the rest.
       const fiveLanes = ['x', 'youtube', 'linkedin', 'instagram', 'quora'];
       const runFiveLaneTimeout = () => {
+        const { startedAt, at } = runStamps();
         configData.posting.radar.sources = Object.fromEntries(fiveLanes.map((id) => [id, { scan: true }]));
         feedData.capabilities = { ...feedData.capabilities, ...Object.fromEntries(fiveLanes.map((id) => [id, { search: false, reply: false }])) };
-        feedData.sources = Object.fromEntries(fiveLanes.map((id) => [id, { ok: false, error: 'timeout', at: new Date().toISOString() }]));
-        feedData.jobs = [job({ state: 'failed', reason: 'timeout', sources: fiveLanes, finishedAt: new Date().toISOString() })];
+        feedData.sources = Object.fromEntries(fiveLanes.map((id) => [id, { ok: false, error: 'timeout', at }]));
+        feedData.jobs = [job({ state: 'failed', reason: 'timeout', sources: fiveLanes, startedAt, finishedAt: at })];
       };
       it('K1: five owned lanes read "Retry X, YouTube, LinkedIn and 2 more" and pass all five', async () => {
         const user = userEvent.setup();
@@ -1131,6 +1184,80 @@ describe('Radar panel (spec 32 listening seam)', () => {
     // overview; single-client mode (this test) passes undefined and the write binds the active client.
     expect(radarTriageMock).toHaveBeenCalledWith('reddit', 'r1', 'dismiss', undefined);
     expect(spy).toHaveBeenCalledWith({ queryKey: ['radar'] });
+  });
+
+  // Relevance plan 1d: "Not relevant" left the overflow for a visible one-tap glyph next to Done
+  // (hide + teach the scan, same one tap + Undo as Done); "More like this" records the example while
+  // the row stays.
+  it('"Not relevant" is a visible one-tap glyph: it dismisses with feedback and its Undo restores the row', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    const less = within(row).getByRole('button', { name: /^not relevant$/i });
+    // Glyph-only (the name is the aria-label, no visible text), the neutral tone (undoable feedback,
+    // never the red of a loss), and the 44px hit area (TAP_TARGET's ::after box).
+    expect(less.textContent).toBe('');
+    expect(less.className).not.toMatch(/text-red/);
+    for (const cls of TAP_TARGET.split(' ')) expect(less.className).toContain(cls);
+    await user.click(less);
+    await waitFor(() => expect(radarTriageMock).toHaveBeenCalledWith('reddit', 'r1', null, undefined, 'less'));
+    const undo = await screen.findByRole('button', { name: /^undo$/i });
+    expect(screen.getByText(/radar will skip threads like this/i)).toBeInTheDocument();
+    await user.click(undo);
+    await waitFor(() => expect(radarRestoreMock).toHaveBeenCalledTimes(1));
+    expect(radarRestoreMock.mock.calls[0][0][0]).toMatchObject({ source: 'reddit', externalId: 'r1' });
+  });
+
+  it('"More like this" records the example without dismissing and confirms briefly', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /more actions/i }));
+    const items = within(row).getAllByRole('menuitem').map((el) => el.textContent);
+    // Watch and More like this: "Not relevant" moved out to the row, so the menu has no dismiss
+    // slot at all (net-simplify: one place per verb, no duplicate).
+    expect(items).toEqual(['Watch', 'More like this']);
+    await user.click(within(row).getByRole('menuitem', { name: /more like this/i }));
+    await waitFor(() => expect(radarTriageMock).toHaveBeenCalledWith('reddit', 'r1', null, undefined, 'more'));
+    expect(await screen.findByText(/radar will look for more threads like this/i)).toBeInTheDocument();
+    expect(screen.getByText('high_intent')).toBeInTheDocument();
+  });
+
+  it('the query chip opens the search: keywords, Edit deep-links to its editor', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], matchedQuery: 'q1' }, feedData.items[1]];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /found by your search: scheduling/i }));
+    const pop = await screen.findByRole('dialog', { name: /found by your search: scheduling/i });
+    expect(within(pop).getByText('schedule')).toBeInTheDocument();
+    await user.click(within(pop).getByRole('button', { name: /^edit$/i }));
+    expect(onNavigateMock).toHaveBeenCalledWith('settings', 'radar:q1');
+  });
+
+  it('the query chip deletes the search after a confirm and clears its signals', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], matchedQuery: 'q1' }, { ...feedData.items[1], matchedQuery: 'q1', watched: true }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /found by your search: scheduling/i }));
+    const pop = await screen.findByRole('dialog', { name: /found by your search: scheduling/i });
+    await user.click(within(pop).getByRole('button', { name: /^remove$/i }));
+    const dialog = await screen.findByRole('dialog', { name: /remove this search/i });
+    expect(saveConfigMock).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: /^remove$/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
+    expect(saveConfigMock.mock.calls[0][1].posting.radar.queries).toEqual([]);
+    // The watched row is pinned on purpose and stays; the other q1 row leaves with its search.
+    await waitFor(() => expect(radarTriageBulkMock).toHaveBeenCalledWith([{ source: 'reddit', externalId: 'r1' }], 'dismiss'));
+  });
+
+  it('a signal of a deleted search shows the raw id with no actions', () => {
+    feedData.items = [{ ...feedData.items[0], matchedQuery: 'gone_query' }, feedData.items[1]];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).getByText('gone_query')).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /found by your search/i })).not.toBeInTheDocument();
   });
 
   // UX issue 10: "Erledigt"/"Done" used to be a GHOST_BTN (borderless text), visually
@@ -1826,15 +1953,17 @@ describe('Radar panel (spec 32 listening seam)', () => {
     });
   });
 
-  // Owner round 3, point 5: the card shows BOTH clocks, the whole card is clickable, and
-  // expanding reveals facts (matched search, exact score + who scored, humanized tags).
-  it('the card shows the post age AND when Radar found it', () => {
+  // D13 (phase 3, LOAD cut): the card shows ONE clock, the post's own age. The "found {time}"
+  // second clock is gone (the "Found when" filter still sorts and slices by it). The whole
+  // card is clickable and expanding reveals facts (matched search, exact score, humanized tags).
+  it('the card shows the post age only, never a second "found" clock', () => {
     const now = Date.now();
     feedData.items = [{ ...feedData.items[0], ts: new Date(now - 19 * 864e5).toISOString(), foundAt: new Date(now - 2 * 36e5).toISOString() }];
     renderPanel();
     const row = screen.getByText('high_intent').closest('li');
     expect(within(row).getByText(/19 days ago/i)).toBeInTheDocument();
-    expect(within(row).getByText(/found .*2 hours ago/i)).toBeInTheDocument();
+    expect(within(row).queryByText(/found .*2 hours ago/i)).toBeNull();
+    expect(within(row).queryByText(/2 hours ago/i)).toBeNull();
   });
 
   it('clicking anywhere on the card expands it to the fact row: matched search, exact score, humanized tags', async () => {
@@ -2145,6 +2274,33 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(radarAgentScanMock).toHaveBeenCalledWith({ sources: ['x', 'youtube'] });
     });
 
+    // D1 (phase 3): a lane the next scan retries on its own (engine_failure, rate_limited, an
+    // agent-lane run reason) needs nothing from the owner, so it reads neutral: zinc ink, zinc
+    // glyph, never the rose stop. Only a lane the owner must fix (needs_scope / not_connected)
+    // keeps its warm glyph.
+    it('a fresh self-healing row reads neutral; only the owner-fix lane keeps a warm glyph', () => {
+      agentLanes();
+      const at = new Date().toISOString();
+      feedData.sources = {
+        x: { ok: false, error: 'timeout', at },
+        hackernews: { ok: false, error: 'engine_failure', at },
+        mastodon: { ok: false, error: 'rate_limited', at },
+        reddit: { ok: false, error: 'needs_scope', at },
+      };
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      const lines = [...card.querySelectorAll('p')];
+      const byName = (re) => lines.find((l) => re.test(l.textContent));
+      for (const line of [byName(/Agent research on X/), byName(/Hacker News/), byName(/Mastodon/)]) {
+        expect(line.className).toMatch(/text-zinc-500/);
+        expect(line.className).not.toMatch(/rose/);
+        expect(line.innerHTML).not.toMatch(/rose/);
+        expect(line.querySelector('svg').getAttribute('class')).toMatch(/text-zinc-500/);
+      }
+      expect(card.innerHTML).not.toMatch(/rose/);
+      expect(byName(/Reddit/).querySelector('svg').getAttribute('class')).toMatch(/amber/);
+    });
+
     it('a fresh failure and a stale one for the same reason never share a line', () => {
       agentLanes();
       feedData.sources = {
@@ -2170,9 +2326,11 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(line.className).not.toMatch(/rose/);
     });
 
-    // H3: bluesky has no Setup lane - its credential is BLUESKY_APP_PASSWORD in the .env. The
-    // line says so and hands the name to the clipboard; a refusal never reads as success.
-    it('a not_connected bluesky line names the .env variable and copies it', async () => {
+    // H3: bluesky has no Setup lane - its credential is a handle + app password in the .env. The
+    // line says so in words (the file and variable names in the tooltip only, r5-b2: ".env" left
+    // the sentence too) and hands the two .env lines to the clipboard; a refusal never reads as
+    // success.
+    it('a not_connected bluesky line says what is missing in words and copies the .env lines', async () => {
       const user = userEvent.setup();
       const writeText = vi.fn(() => Promise.resolve());
       Object.defineProperty(window.navigator, 'clipboard', { value: { writeText }, configurable: true });
@@ -2180,11 +2338,18 @@ describe('Radar panel (spec 32 listening seam)', () => {
       renderPanel();
       const card = screen.getByRole('status', { name: '' });
       const line = card.querySelector('p');
-      expect(line.textContent).toMatch(/Bluesky: not connected/);
-      expect(line.textContent).toMatch(/app password in the \.env:\s*BLUESKY_APP_PASSWORD/);
-      expect(line.querySelectorAll('button, a[href]')).toHaveLength(1);
-      await user.click(within(line).getByRole('button', { name: /copy variable name/i }));
-      expect(writeText).toHaveBeenCalledWith('BLUESKY_APP_PASSWORD=');
+      // judge round 2: ONE sentence with single spaces and a closing period.
+      const visible = within(line).getByText(/Bluesky: not connected\./).textContent;
+      expect(visible).toBe('Bluesky: not connected. Handle and app password are missing.');
+      expect(visible).not.toMatch(/\.env/);
+      expect(visible).not.toMatch(/ {2}/);
+      expect(within(line).queryByText(/BLUESKY_/, { ignore: '.sr-only, script, style' })).toBeNull();
+      // Two controls: the visible "?" that holds the names, and the one recovery action.
+      expect(line.querySelectorAll('button, a[href]')).toHaveLength(2);
+      await user.click(within(line).getByRole('button', { name: /more about this/i }));
+      await waitFor(() => expect(document.querySelector('[data-infotip-content]')).toHaveTextContent('In the .env: BLUESKY_IDENTIFIER, BLUESKY_APP_PASSWORD'));
+      await user.click(within(line).getByRole('button', { name: /copy config lines/i }));
+      expect(writeText).toHaveBeenCalledWith('BLUESKY_IDENTIFIER=\nBLUESKY_APP_PASSWORD=');
       expect(await within(line).findByText(/copied/i)).toBeInTheDocument();
     });
 
@@ -2194,7 +2359,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
       feedData.sources = { bluesky: { ok: false, error: 'not_connected', at: new Date().toISOString() } };
       renderPanel();
       const line = screen.getByRole('status', { name: '' }).querySelector('p');
-      await user.click(within(line).getByRole('button', { name: /copy variable name/i }));
+      await user.click(within(line).getByRole('button', { name: /copy config lines/i }));
       expect(await within(line).findByText(/could not copy/i)).toBeInTheDocument();
       expect(within(line).queryByText(/^copied$/i)).not.toBeInTheDocument();
     });
@@ -2851,16 +3016,19 @@ describe('Radar panel (spec 32 listening seam)', () => {
 
     it('WS4: with Reddit scanned but warmth unmeasured, the gauge stays hidden (no fabricated number, no redundant connect nudge)', () => {
       // Reddit is a searchable lane, no warm-up query, warmth never measured. The gauge used to
-      // render a "connect Reddit" chip here, but that duplicated the connect path the source-glyph
-      // strip already carries (both go to setup/reddit) - a second nudge for one action. The gauge
-      // now shows nothing until there is real warmth; connecting Reddit lives on the glyph.
+      // render a "connect Reddit" chip here, a second nudge for a connect path that already
+      // exists. The gauge now shows nothing until there is real warmth.
       feedData.capabilities = { reddit: { reply: true, search: true }, hackernews: { reply: false, search: true } };
       renderPanel();
       expect(screen.queryByText(/connect reddit to track karma/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/reddit karma/i)).not.toBeInTheDocument();
-      // The connect path is not lost: the source-glyph strip carries Reddit's connect affordance.
+      // judge round 2 LOAD cut: the header glyph is a READOUT only. final-a7: it speaks about
+      // scanning alone ("Reddit: scanned."), never a reply verdict that could contradict the
+      // reply judge; connecting a reply lane lives with that judge (the Auto-Antwort lane list,
+      // or the header overflow's "Set up auto-reply" -> Settings > Für mich antworten).
       const coverage = screen.getByRole('list', { name: /sources these searches cover/i });
-      expect(within(coverage).getByRole('button', { name: /reddit: scanned\. connect it to reply/i })).toBeInTheDocument();
+      expect(within(coverage).getByRole('img', { name: 'Reddit: scanned.' })).toBeInTheDocument();
+      expect(within(coverage).queryByRole('button')).toBeNull();
     });
   });
 });
@@ -3074,22 +3242,143 @@ describe('Radar panel - Turn on auto-reply (one-click arm, deadlock fix)', () =>
   // Connected = the credential authenticates (account_status.live.ok) OR the engage probe
   // already said ready - NOT the runtime `usable` the old strip gated on, which needs a probe
   // nobody runs. These fixtures mirror the owner's real gap: Mastodon connected, Reddit not.
+  // final-a6: the lane's readiness comes from the ONE judge (lib/format.js replyLaneState) over
+  // the engage runtime, whose `credential` fact the engine derives from the same account read
+  // (live = the Setup liveness probe passed). So a connected lane is a runtime lane, here as in
+  // the Settings ledger.
+  const setLanes = (lanes) => {
+    engageRuntime = { mode: 'off', paused: false, today: {}, waitingForChrome: 0, ...(engageRuntime || {}), lanes: { ...(engageRuntime?.lanes || {}), ...lanes } };
+  };
   const connectMastodon = () => {
     accountsData = { ...accountsData, mastodon: { authenticated: true, configured: true, live: { ok: true } } };
+    setLanes({ mastodon: { usable: false, reason: 'checking', credential: 'live' } });
   };
   const turnOnButton = () => screen.getByRole('button', { name: /turn on auto-?reply|turn on automation/i });
+  // The per-channel list is folded behind the strip's own header (the feed leads); open it.
+  const openLanes = (user) => user.click(screen.getByRole('button', { name: /^auto-reply/i, expanded: false }));
+
+  it('the channel list starts folded, so the feed leads; the header opens it', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    renderPanel();
+    expect(screen.queryByRole('button', { name: /manage lanes/i })).not.toBeInTheDocument();
+    await openLanes(user);
+    expect(screen.getByRole('button', { name: /^auto-reply/i, expanded: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /manage lanes/i })).toBeInTheDocument();
+  });
+
+  // D10 (phase 3): with a reply channel ready the strip is ONE 44px line, "Auto-reply: {state}"
+  // plus its one action, never an expanded card above the feed. The rest opens in place.
+  it('ready channel, automation off: one line "Auto-reply: Off" + Turn on; the explainer opens in place', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    renderPanel();
+    const line = screen.getByRole('button', { name: 'Auto-reply: Off', expanded: false });
+    const row = line.parentElement;
+    expect(row.className).toMatch(/min-h-11/);
+    // Exactly two controls on the line: the disclosure and the one action.
+    expect(within(row).getAllByRole('button')).toHaveLength(2);
+    expect(within(row).getByRole('button', { name: /turn on auto-reply/i })).toBeInTheDocument();
+    expect(screen.queryByText(/posts replies for you on 1 ready lane/i)).toBeNull();
+    await user.click(line);
+    expect(screen.getByText(/posts replies for you on 1 ready lane/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /manage lanes/i })).toBeInTheDocument();
+  });
+
+  it('automation on: one line "Auto-reply: Live" + Pause; summary, scope and Turn off open in place', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    configData.posting.radar.engage = { mode: 'live', paused: false, lanes: { mastodon: { enabled: true } }, caps: { reply: 5 } };
+    engageRuntime = { ...engageRuntime, mode: 'live', paused: false, today: { posted: 2 } };
+    renderPanel();
+    const line = screen.getByRole('button', { name: 'Auto-reply: Live', expanded: false });
+    const row = line.parentElement;
+    expect(within(row).getAllByRole('button')).toHaveLength(2);
+    expect(within(row).getByRole('button', { name: /^pause$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^turn off$/i })).toBeNull();
+    expect(screen.queryByText(/what may be posted/i)).toBeNull();
+    await user.click(line);
+    expect(screen.getByRole('button', { name: /^turn off$/i })).toBeInTheDocument();
+    expect(screen.getByText(/what may be posted/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 today/)).toBeInTheDocument();
+  });
+
+  it('paused automation reads "Auto-reply: Paused" with Resume as its one action', () => {
+    connectMastodon();
+    configData.posting.radar.engage = { mode: 'live', paused: true, lanes: { mastodon: { enabled: true } } };
+    engageRuntime = { ...engageRuntime, mode: 'live', paused: true };
+    renderPanel();
+    const row = screen.getByRole('button', { name: 'Auto-reply: Paused' }).parentElement;
+    expect(within(row).getByRole('button', { name: /^resume$/i })).toBeInTheDocument();
+  });
+
+  it('a not-connected bluesky reply lane reads plain "Not connected"; the env var name only behind its ? trigger', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    feedData.capabilities = { ...feedData.capabilities, bluesky: { reply: true } };
+    setLanes({ bluesky: { usable: false, reason: 'checking', credential: 'none' } });
+    renderPanel();
+    await openLanes(user);
+    const row = screen.getAllByText('Bluesky').map((el) => el.closest('li')).find((li) => li && /not connected/i.test(li.textContent));
+    expect(row).toBeTruthy();
+    // The name sits behind the visible "?" only; the row's one move is the shared copy action.
+    expect(within(row).queryByText(/BLUESKY_APP_PASSWORD/, { ignore: '.sr-only, script, style' })).toBeNull();
+    expect(within(row).getByRole('button', { name: /copy config lines/i })).toBeInTheDocument();
+  });
+
+  // final-a6: the Radar list used to FORCE "Not connected" onto every lane that was not
+  // connected, while the Settings ledger read the runtime ("Not checked yet"). One lane, two
+  // words. Both now call the same judge with the same runtime.
+  it('a bluesky lane with its app password stored but never probed reads "Not checked yet" + Check now, as in Settings', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    feedData.capabilities = { ...feedData.capabilities, bluesky: { reply: true } };
+    setLanes({ bluesky: { usable: false, reason: 'checking', credential: 'stored' } });
+    renderPanel();
+    await openLanes(user);
+    const row = screen.getAllByText('Bluesky').map((el) => el.closest('li')).find(Boolean);
+    expect(within(row).getByText('Not checked yet')).toBeInTheDocument();
+    expect(within(row).queryByText(/not connected/i)).toBeNull();
+    await user.click(within(row).getByRole('button', { name: /^check now$/i }));
+    await waitFor(() => expect(engageProbeMock).toHaveBeenCalledWith('bluesky'));
+  });
 
   it('the button is ENABLED when a reply lane is connected, even with nothing probed yet', () => {
     connectMastodon();
     renderPanel();
     expect(turnOnButton()).toBeEnabled();
+    expect(turnOnButton()).not.toHaveAttribute('aria-disabled');
   });
 
-  it('the button is DISABLED when no reply lane is connected (never blocks, but nothing to arm)', () => {
+  // P3 polish (judge round 2, prevent at the control): with no reply channel the control is
+  // honestly unavailable. It stays focusable (aria-disabled, not native disabled) so its
+  // reason is heard, the reason is the card's own "Connect a reply lane first." line (its
+  // accessible description), it reads as disabled, and a click does nothing.
+  // Final judge (release round): with no reply channel the card was a disabled CTA stacked
+  // above the feed (the first signal started at y=570 on a phone). Until a channel exists there
+  // is nothing to turn on, so the card leaves the page and the header overflow carries ONE entry
+  // that opens Settings > Für mich antworten, where every lane's Connect already lives.
+  it('no reply lane connected: no Auto-reply card above the feed; the overflow carries "Set up auto-reply" to Settings', async () => {
+    const user = userEvent.setup();
     renderPanel(); // default: reddit not configured, mastodon not connected, no .live
-    expect(turnOnButton()).toBeDisabled();
-    // and each reply lane is NAMED with its next step, never a dead "Not ready" line
-    expect(screen.getAllByText(/not connected/i).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /turn on auto-?reply|turn on automation/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^auto-reply/i })).toBeNull();
+    expect(screen.queryByText(/connect a reply lane first/i)).toBeNull();
+    const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
+    await user.click(within(headerCluster).getByRole('button', { name: /more actions/i }));
+    await user.click(screen.getByRole('menuitem', { name: /set up auto-reply/i }));
+    expect(onNavigateMock).toHaveBeenCalledWith('settings', 'engage');
+    expect(saveConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('with a reply lane connected the overflow has no setup entry (the card itself is the route)', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    renderPanel();
+    expect(turnOnButton()).toBeEnabled();
+    const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
+    await user.click(within(headerCluster).getByRole('button', { name: /more actions/i }));
+    expect(screen.queryByRole('menuitem', { name: /set up auto-reply/i })).toBeNull();
   });
 
   it('one click arms EACH connected reply lane: mode live + per-lane enabled (read-modify-write) + radarReplies, then probes it', async () => {
@@ -3119,6 +3408,7 @@ describe('Radar panel - Turn on auto-reply (one-click arm, deadlock fix)', () =>
     feedData.capabilities = { ...feedData.capabilities, x: { reply: false, copyDraft: true } };
     accountsData = { ...accountsData, x: { authenticated: true, configured: true, live: { ok: true } } };
     renderPanel();
+    await openLanes(user);
     expect(screen.getByText(/draft only/i)).toBeInTheDocument();
     await user.click(turnOnButton());
     await user.click(await screen.findByRole('button', { name: /go live/i }));
@@ -3133,6 +3423,7 @@ describe('Radar panel - Turn on auto-reply (one-click arm, deadlock fix)', () =>
     connectMastodon();
     feedData.capabilities = { ...feedData.capabilities, x: { reply: true } };
     accountsData = { ...accountsData, x: { authenticated: true, configured: true, live: { ok: true } } };
+    setLanes({ x: { usable: false, reason: 'checking', credential: 'live' } });
     renderPanel();
     await user.click(turnOnButton());
     await user.click(await screen.findByRole('button', { name: /go live/i }));
@@ -3145,10 +3436,419 @@ describe('Radar panel - Turn on auto-reply (one-click arm, deadlock fix)', () =>
   it('a not-connected reply lane is named with a Connect deep-link to Setup (no dead end)', async () => {
     const user = userEvent.setup();
     connectMastodon(); // so the strip renders its lane list
+    setLanes({ reddit: { usable: false, reason: 'checking', credential: 'none' } });
     renderPanel();
+    await openLanes(user);
     // Reddit is reply-capable but not connected -> its line carries the one Connect action.
     const connects = screen.getAllByRole('button', { name: /^connect$/i });
     await user.click(connects[0]);
     expect(onNavigateMock).toHaveBeenCalledWith('setup', 'reddit');
+  });
+});
+
+// ---- judge round 2 (fresh eyes): honest notice heading, header load, hit areas ----------
+describe('Radar panel - judge round 2', () => {
+  const noScanYet = () => { delete feedData.lastScan; feedData.jobs = []; feedData.items = []; };
+
+  it('a never-connected lane with no scan run makes NO "last scan" claim', () => {
+    noScanYet();
+    feedData.sources = { bluesky: { ok: false, error: 'not_connected', scope: 'app-password', at: new Date().toISOString() } };
+    renderPanel();
+    const card = screen.getByRole('status', { name: '' });
+    expect(card.textContent).toMatch(/Bluesky: not connected\./);
+    expect(screen.queryByText(/unreachable in the last scan/i)).toBeNull();
+  });
+
+  it('a not-connected lane after a scan still makes no "unreachable" claim (a setup gap, not a failure)', () => {
+    feedData.sources = { reddit: { ok: false, error: 'not_connected', at: new Date().toISOString() } };
+    renderPanel();
+    expect(screen.getByRole('status', { name: '' }).textContent).toMatch(/Reddit/);
+    expect(screen.queryByText(/unreachable in the last scan/i)).toBeNull();
+  });
+
+  it('a lane that a real scan tried and failed DOES carry the heading', () => {
+    feedData.sources = { hackernews: { ok: false, error: 'engine_failure', at: new Date().toISOString() } };
+    renderPanel();
+    const card = screen.getByRole('status', { name: '' });
+    expect(within(card).getByText('Unreachable in the last scan')).toBeInTheDocument();
+  });
+
+  it('the German heading shows only for a real failure, and the Bluesky sentence ends with a period', () => {
+    feedData.sources = {
+      hackernews: { ok: false, error: 'engine_failure', at: new Date().toISOString() },
+      bluesky: { ok: false, error: 'not_connected', at: new Date().toISOString() },
+    };
+    renderPanel({ locale: 'de-CH' });
+    expect(screen.getByText('Im letzten Scan nicht erreichbar')).toBeInTheDocument();
+    expect(screen.getByText('Bluesky: Nicht verbunden. Handle und App-Passwort fehlen.')).toBeInTheDocument();
+  });
+
+  it('the header row offers at most 7 first-contact choices (canon Tier 2)', () => {
+    feedData.capabilities = { ...feedData.capabilities, reddit: { reply: true, search: true }, mastodon: { reply: true, search: true }, bluesky: { reply: true, search: true } };
+    configData.posting.radar.queries[0].sources = ['reddit', 'hackernews', 'bluesky', 'mastodon'];
+    renderPanel();
+    const header = screen.getByRole('heading', { name: 'Radar' }).parentElement;
+    const choices = [...header.querySelectorAll('button, a[href], input, select, [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !el.disabled);
+    expect(choices.length).toBeLessThanOrEqual(7);
+    // The source strip is a readout, not four more buttons.
+    const coverage = within(header).getByRole('list', { name: /sources these searches cover/i });
+    expect(within(coverage).queryByRole('button')).toBeNull();
+  });
+
+  it('every header control and the notice action carry the 44px tap area', () => {
+    feedData.sources = { bluesky: { ok: false, error: 'not_connected', at: new Date().toISOString() } };
+    renderPanel();
+    const header = screen.getByRole('heading', { name: 'Radar' }).parentElement;
+    const tapClasses = TAP_TARGET.split(' ');
+    const hasTap = (el) => tapClasses.every((c) => el.className.includes(c));
+    for (const el of header.querySelectorAll('button')) {
+      if (el.getAttribute('role') === 'radio' || el.getAttribute('role') === 'tab') continue; // the Segmented owns its own size
+      expect({ name: el.getAttribute('aria-label') || el.textContent, ok: hasTap(el) }).toEqual({ name: el.getAttribute('aria-label') || el.textContent, ok: true });
+    }
+    const copy = within(screen.getByRole('status', { name: '' })).getByRole('button', { name: /copy config lines/i });
+    for (const c of tapClasses) expect(copy.className).toContain(c);
+  });
+});
+
+// ---- final judge (release round): tap-target spacing, one empty-state truth, honest heading ----
+describe('Radar panel - final judge fixes', () => {
+  // Measured in the browser (verify-radar-judge2 unobstructedUnder44): each neighbour's 44px box
+  // covered part of the next one. These classes are the spacing that keeps the boxes apart;
+  // the flow gate measures the result (every listed control unobstructed >= 44x44).
+  it('header neighbours keep their 44px boxes apart: gap after the about "?", between gear and overflow, and between wrapped rows', () => {
+    renderPanel();
+    const about = screen.getByRole('button', { name: /what is radar/i });
+    expect(about.className).toMatch(/\bmr-2\b/);
+    const gear = screen.getByRole('button', { name: /radar settings/i });
+    expect(gear.className).toMatch(/\bmr-2\.5\b/);
+    const header = screen.getByRole('heading', { name: 'Radar' }).parentElement;
+    expect(header.className).toMatch(/\bgap-y-5\b/);
+  });
+
+  it('a past result with nothing in it: the empty state agrees with "Last result" and asks for an agent only for the NEXT scan', () => {
+    healthData = agentNotLive();
+    feedData.items = [];
+    feedData.lastScan = new Date(Date.now() - 20 * 60e3).toISOString();
+    renderPanel();
+    expect(screen.getByText(/^last result/i)).toBeInTheDocument();
+    expect(screen.getByText('No new signals')).toBeInTheDocument();
+    expect(screen.getByText(/^connect an agent for the next scan\.$/i)).toBeInTheDocument();
+    expect(screen.queryByText('No signals yet.')).toBeNull();
+    expect(screen.queryByText(/scanning starts once an agent is connected/i)).toBeNull();
+  });
+
+  it('German: the empty state after a past result reads as one truth', () => {
+    healthData = agentNotLive();
+    feedData.items = [];
+    feedData.lastScan = new Date(Date.now() - 20 * 60e3).toISOString();
+    renderPanel({ locale: 'de-CH' });
+    expect(screen.getByText('Keine neuen Signale')).toBeInTheDocument();
+    expect(screen.getByText('Verbinde einen Agenten für den nächsten Scan.')).toBeInTheDocument();
+    expect(screen.queryByText(/Das Scannen startet/)).toBeNull();
+  });
+
+  it('the "unreachable" heading heads only the lanes a scan tried; a never-connected lane sits outside its group', () => {
+    feedData.sources = {
+      hackernews: { ok: false, error: 'engine_failure', at: new Date().toISOString() },
+      bluesky: { ok: false, error: 'not_connected', at: new Date().toISOString() },
+    };
+    renderPanel();
+    const heading = screen.getByText('Unreachable in the last scan');
+    const group = heading.parentElement;
+    expect(group.textContent).toMatch(/Hacker News/);
+    expect(group.textContent).not.toMatch(/Bluesky/);
+    expect(screen.getByRole('status', { name: '' }).textContent).toMatch(/Bluesky: not connected\./);
+  });
+});
+
+// ---- r5: the never-connected lane leaves the "unreachable" CARD, not just its DOM group ----
+describe('Radar panel - r5 honest heading', () => {
+  // final2 judge (radar-judge2/11): cb122369 moved the never-connected line into its own DOM
+  // group, but that group sat inside the SAME painted card as the heading, only a hairline
+  // below it, so a sighted owner still read Bluesky as "unreachable in the last scan". The
+  // previous test checked the DOM group, not the card the eye groups by. The gap line now
+  // gets its own card, exactly as it looks when it stands alone.
+  it('the never-connected line sits in its own card, outside the card that carries the heading', () => {
+    feedData.sources = {
+      hackernews: { ok: false, error: 'engine_failure', at: new Date().toISOString() },
+      bluesky: { ok: false, error: 'not_connected', at: new Date().toISOString() },
+    };
+    renderPanel({ locale: 'de-CH' });
+    const headedCard = screen.getByText('Im letzten Scan nicht erreichbar').closest('.rounded-xl');
+    expect(headedCard.textContent).toMatch(/Hacker News/);
+    expect(headedCard.textContent).not.toMatch(/Bluesky/);
+    const gapCard = screen.getByText(/^Bluesky: Nicht verbunden\./).closest('.rounded-xl');
+    expect(gapCard).not.toBe(headedCard);
+    expect(gapCard.textContent).not.toMatch(/nicht erreichbar/);
+  });
+
+  it('alone, the never-connected line keeps its one card and no heading', () => {
+    feedData.sources = { bluesky: { ok: false, error: 'not_connected', at: new Date().toISOString() } };
+    renderPanel({ locale: 'de-CH' });
+    const status = screen.getByRole('status', { name: '' });
+    expect(status.querySelectorAll('.rounded-xl')).toHaveLength(1);
+    expect(status.textContent).not.toMatch(/nicht erreichbar/);
+  });
+});
+
+// Raw-error sweep (phase 3): every Radar page failure is ONE plain sentence; the server's or the
+// engine's raw line rides the shared "?" only, never inline.
+describe('Radar panel - failures speak a plain sentence, raw line behind the "?"', () => {
+  const alertWith = async (text) => (await screen.findByText(text)).closest('[role="alert"]');
+  const rawBehindTip = (raw) => screen.getAllByRole('button', { name: /more about this/i })
+    .some((b) => document.getElementById(b.getAttribute('aria-describedby'))?.textContent === raw);
+
+  it('a failed scan start says "Scan failed"; the raw server line is only the "?" description', async () => {
+    const user = userEvent.setup();
+    radarAgentScanMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /scan now/i }));
+    const alert = await alertWith('Scan failed, try again');
+    expect(alert).not.toBeNull();
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip('HTTP 500 internal')).toBe(true);
+  });
+
+  it('a message-less scan failure still leaves the plain sentence as the alert', async () => {
+    const user = userEvent.setup();
+    radarAgentScanMock.mockRejectedValueOnce(new Error());
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /scan now/i }));
+    expect(await alertWith('Scan failed, try again')).not.toBeNull();
+  });
+
+  it('a failed enable (config write) says the save sentence, raw line behind the "?"', async () => {
+    const user = userEvent.setup();
+    configData = radarOff();
+    saveConfigMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /enable for this project/i }));
+    const alert = await alertWith('Could not save, try again');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip('HTTP 500 internal')).toBe(true);
+  });
+
+  it('a failed pause says "Could not pause." and nothing raw inline', async () => {
+    const user = userEvent.setup();
+    configData.posting.radar.engage = { mode: 'live', paused: false, lanes: {} };
+    engageRuntime = { mode: 'live', paused: false, lanes: {}, today: {}, waitingForChrome: 0 };
+    engagePauseMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /^pause$/i }));
+    const alert = await alertWith('Could not pause.');
+    expect(alert).not.toHaveTextContent(/HTTP 500|Could not save/);
+    expect(rawBehindTip('HTTP 500 internal')).toBe(true);
+  });
+
+  it('a failed auto-reply arm says the save sentence on the strip, raw line behind the "?"', async () => {
+    const user = userEvent.setup();
+    accountsData = { ...accountsData, mastodon: { authenticated: true, configured: true, live: { ok: true } } };
+    engageRuntime = { mode: 'off', paused: false, today: {}, waitingForChrome: 0, lanes: { mastodon: { usable: false, reason: 'checking', credential: 'live' } } };
+    saveConfigMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /turn on auto-?reply|turn on automation/i }));
+    await user.click(await screen.findByRole('button', { name: /go live/i }));
+    const alert = await alertWith('Could not save, try again');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip('HTTP 500 internal')).toBe(true);
+  });
+});
+
+// Raw-error sweep (phase 3): a signal row's own failures (queue a reply, record a copy-posted
+// marker, repair a manual mark, draft or dismiss a backlog page, cancel a Respond-for-me row)
+// are ONE plain sentence; the raw server line rides the shared "?" only, never inline.
+describe('Radar feed rows - failures speak a plain sentence, raw line behind the "?"', () => {
+  const rawBehindTip = (scope, raw) => within(scope).getAllByRole('button', { name: /more about this/i })
+    .some((b) => document.getElementById(b.getAttribute('aria-describedby'))?.textContent === raw);
+  const copyItem = () => [{
+    source: 'hackernews', externalId: 'h2', url: 'https://mock.hn/2', author: 'pain_point',
+    community: 'news.ycombinator.com', text: 'every scheduler I tried is overpriced or unusable',
+    ts: new Date().toISOString(), intentScore: 70, scoredBy: 'agent', reason: 'open pain point',
+    draft: { text: 'We hit the same wall; happy to share what worked.', mode: 'copy', ts: new Date().toISOString() },
+  }];
+
+  it('a failed reply queue says the reply sentence; the raw server line is only the "?"', async () => {
+    const user = userEvent.setup();
+    radarQueueReplyMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /draft reply/i }));
+    await user.type(within(row).getByRole('textbox'), 'my typed reply');
+    await user.click(within(row).getByRole('button', { name: /^queue reply$/i }));
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent('Could not queue the reply, try again');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip(row, 'HTTP 500 internal')).toBe(true);
+  });
+
+  it('a message-less reply queue failure still leaves the plain sentence as the alert', async () => {
+    const user = userEvent.setup();
+    radarQueueReplyMock.mockRejectedValueOnce(new Error());
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /draft reply/i }));
+    await user.type(within(row).getByRole('textbox'), 'my typed reply');
+    await user.click(within(row).getByRole('button', { name: /^queue reply$/i }));
+    expect(await within(row).findByRole('alert')).toHaveTextContent('Could not queue the reply, try again');
+  });
+
+  it('a failed copy-posted mark says the record sentence; the raw server line is only the "?"', async () => {
+    feedData.items = copyItem();
+    radarMarkCopyPostedMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    vi.spyOn(window, 'open').mockImplementation(() => null);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(() => Promise.resolve()) }, configurable: true });
+    const user = userEvent.setup();
+    renderPanel();
+    const row = screen.getByText('pain_point').closest('li');
+    await user.click(within(row).getByRole('button', { name: /copy reply & open thread/i }));
+    await user.click(await within(row).findByRole('button', { name: /^posted$/i }));
+    const line = await within(row).findByText('Could not record this. Please try again.');
+    expect(line).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip(row, 'HTTP 500 internal')).toBe(true);
+  });
+
+  it('a failed manual-mark link repair says the record sentence; the raw server line is only the "?"', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], replied: { url: null, via: 'manual', postId: 'radar-x-1', campaign: 'c1' }, repliedUrl: null }];
+    markPostedMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /add link/i }));
+    await user.type(within(row).getByRole('textbox', { name: /link to the published post/i }), 'https://x.com/op/status/9');
+    await user.click(within(row).getByRole('button', { name: /posted/i }));
+    const line = await within(row).findByText('Could not record this. Please try again.');
+    expect(line).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip(row, 'HTTP 500 internal')).toBe(true);
+  });
+
+  it('a failed backlog draft says the draft sentence; the raw server line is only the "?"', async () => {
+    const user = userEvent.setup();
+    feedData.geo = { comparisonBacklog: [{ key: 'buffer', title: 'pendpost vs Buffer', buyerPhrases: ['alternative to buffer'], examples: ['https://x.test/1'] }], footprint: [] };
+    accountsData = { wordpress: { authenticated: true } };
+    radarDraftComparisonMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /worth writing for AI answers/i }));
+    await user.click(screen.getByRole('button', { name: /draft it/i }));
+    const row = screen.getByText('pendpost vs Buffer').closest('li');
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent('Could not draft this page.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip(row, 'HTTP 500 internal')).toBe(true);
+  });
+
+  it('a failed Respond-for-me cancel says "Could not cancel." and nothing raw inline', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{
+      source: 'reddit', externalId: 'r1', url: 'https://mock.reddit/1', author: 'high_intent',
+      community: 'r/socialmedia', text: 'What tool should I use to schedule posts?',
+      ts: new Date().toISOString(), intentScore: 82, intentTags: ['buying-question'], suggestedAction: 'reply',
+      engage: { actionId: 'a1', status: 'posting_soon', waitingOn: null, kinds: ['repost'], graceUntil: new Date(Date.now() + 10 * 60_000).toISOString() },
+    }];
+    engageCancelMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderPanel();
+    const row = document.getElementById(`radar-sig-${encodeURIComponent('reddit r1')}`);
+    await user.click(within(row).getByRole('button', { name: /more actions/i }));
+    await user.click(await screen.findByRole('menuitem', { name: /^cancel$/i }));
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent(/^Could not cancel\.$/);
+    expect(rawBehindTip(row, 'HTTP 500 internal')).toBe(true);
+  });
+});
+
+describe('Radar panel - By search: precision and the query tuner (relevance plan 1d/1e)', () => {
+  const openBySearch = async (user) => {
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /^by search$/i }));
+  };
+  const withTune = () => {
+    feedData.items = [{ ...feedData.items[0], matchedQuery: 'q1' }, feedData.items[1]];
+    feedData.queryStats = { q1: { shown: 20, less: 2, done: 1, drafted: 1, replied: 0, since: new Date().toISOString() } };
+    feedData.tune = {
+      proposals: [{ id: 'tp1', queryId: 'q1', kind: 'keywords', add: ['Buffer alternative', 'Hootsuite too expensive'], why: 'x', status: 'open' }],
+      log: [{ id: 'tl1', queryId: 'q1', kind: 'excludeKeywords', added: ['NFL'], before: [], after: ['NFL'], auto: true }],
+      lastRunAt: null,
+    };
+  };
+
+  it('shows each search\'s precision next to its count, with the raw figures a hover away', async () => {
+    const user = userEvent.setup();
+    withTune();
+    await openBySearch(user);
+    const row = screen.getByText('scheduling').closest('li');
+    expect(within(row).getByText('90% relevant')).toBeInTheDocument();
+    expect(within(row).queryByText(/suggestion/i)).toBeInTheDocument();
+  });
+
+  it('hides the tuner lines and the precision when there is nothing to show', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], matchedQuery: 'q1' }, feedData.items[1]];
+    await openBySearch(user);
+    const row = screen.getByText('scheduling').closest('li');
+    expect(within(row).queryByText(/relevant/)).not.toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /^apply$/i })).not.toBeInTheDocument();
+    expect(within(row).queryByText(/tuned automatically/i)).not.toBeInTheDocument();
+  });
+
+  it('a proposal applies with a spinner while it runs, then asks the server and refreshes', async () => {
+    const user = userEvent.setup();
+    withTune();
+    let release;
+    radarTuneMock.mockImplementation(() => new Promise((r) => { release = r; }));
+    await openBySearch(user);
+    const row = screen.getByText('scheduling').closest('li');
+    expect(within(row).getByText('add keywords: Buffer alternative, Hootsuite too expensive')).toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /^apply$/i }));
+    expect(radarTuneMock).toHaveBeenCalledWith('apply', { proposalId: 'tp1' });
+    // Busy: both of the line's buttons hold until the answer lands.
+    expect(within(row).getByRole('button', { name: /^apply$/i })).toBeDisabled();
+    expect(within(row).getByRole('button', { name: /^dismiss$/i })).toBeDisabled();
+    release({ ok: true });
+    await waitFor(() => expect(within(row).getByRole('button', { name: /^apply$/i })).not.toBeDisabled());
+  });
+
+  it('a refused apply stays inline under the line, and nothing is applied', async () => {
+    const user = userEvent.setup();
+    withTune();
+    radarTuneMock.mockImplementation(() => Promise.reject(Object.assign(new Error('the search already has these values'), { code: 'invalid_input' })));
+    await openBySearch(user);
+    const row = screen.getByText('scheduling').closest('li');
+    await user.click(within(row).getByRole('button', { name: /^apply$/i }));
+    expect(await within(row).findByRole('alert')).toHaveTextContent(/not applied/i);
+    // The line stays, so the owner can still dismiss it.
+    expect(within(row).getByRole('button', { name: /^dismiss$/i })).not.toBeDisabled();
+  });
+
+  it('a proposal dismisses, and an auto-applied change undoes', async () => {
+    const user = userEvent.setup();
+    withTune();
+    await openBySearch(user);
+    const row = screen.getByText('scheduling').closest('li');
+    await user.click(within(row).getByRole('button', { name: /^dismiss$/i }));
+    await waitFor(() => expect(radarTuneMock).toHaveBeenCalledWith('dismiss', { proposalId: 'tp1' }));
+    expect(within(row).getByText(/tuned automatically/i)).toBeInTheDocument();
+    expect(within(row).getByText('added exclusions: NFL')).toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /^undo$/i }));
+    await waitFor(() => expect(radarTuneMock).toHaveBeenCalledWith('undo', { logId: 'tl1' }));
+  });
+
+  it('a search with a proposal but no signal in the feed still gets its row', async () => {
+    const user = userEvent.setup();
+    withTune();
+    feedData.items = [feedData.items[1]];
+    await openBySearch(user);
+    expect(screen.getByText('scheduling')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^apply$/i })).toBeInTheDocument();
+  });
+
+  it('renders the German copy with real umlauts', async () => {
+    const user = userEvent.setup();
+    withTune();
+    renderPanel({ locale: 'de-CH' });
+    await user.click(screen.getByRole('button', { name: /^nach suche$/i }));
+    expect(screen.getByRole('button', { name: /^übernehmen$/i })).toBeInTheDocument();
+    expect(screen.getByText('90 % relevant')).toBeInTheDocument();
+    expect(screen.getByText('Ausschlüsse ergänzt: NFL')).toBeInTheDocument();
   });
 });

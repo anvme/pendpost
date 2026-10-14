@@ -22,10 +22,10 @@ const { SYNC_REASONS, SYNC_STATES } = await import('../lib/cloud-client.mjs');
 const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/src/locales/en.json'), 'utf8')).strings;
 const de = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/src/locales/de-CH.json'), 'utf8')).strings;
 
-// green (all_confirmed) and yellow (push_pending) render the status line, never a reason
-// sentence (ConnectionStatus only shows a reason for degraded/broken), so they carry no
-// reason key by design. Every other reason MUST have copy in both locales.
-const NO_REASON_LINE = new Set(['all_confirmed', 'push_pending']);
+// green (all_confirmed) renders the status line only, never a reason sentence, so it
+// carries no reason key by design. Every other reason, push_pending (yellow's neutral
+// line in ConnectionStatus) included, MUST have copy in both locales.
+const NO_REASON_LINE = new Set(['all_confirmed']);
 const needCopy = SYNC_REASONS.filter((r) => !NO_REASON_LINE.has(r));
 
 for (const r of needCopy) {

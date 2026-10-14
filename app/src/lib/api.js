@@ -1,4 +1,5 @@
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
+import { humanizeAction } from './failureCopy.js';
 
 async function getJson(path) {
   const res = await fetch(path);
@@ -678,6 +679,9 @@ async function sendJson(method, path, body, { timeoutMs } = {}) {
       // The finer discriminator some writes carry alongside a stable code (e.g. spec 06
       // moderate returns code:'invalid_input' with error:'unsupported_action').
       if (data.error) err.error = data.error;
+      // The platform a refusal is about (approve's not_configured for a skipped lane), so
+      // the alert can name it in the owner's language.
+      if (typeof data.platform === 'string') err.platform = data.platform;
       // A4 archive safety: the archive refusal (needs_confirm) carries the client's
       // fresh in-flight counts so the UI can re-ask with the server's numbers.
       if (data.inFlight) err.inFlight = data.inFlight;
@@ -702,19 +706,37 @@ async function sendJson(method, path, body, { timeoutMs } = {}) {
 
 const postJson = (path, body, opts) => sendJson('POST', path, body, opts);
 
-// Humanize an agent-path error BY CODE, never by raw prose (issue 7): the one-job-per-client
-// lock's 409 ('in_flight') and a browser network TypeError (Safari's own message is literally
-// "Load failed") both used to land verbatim on a German-capable surface. The scan-start
-// refusals get their own lines too: 'disabled' = the daily agent budget is spent (the next
-// scheduled scan runs by itself, nothing is broken) and 'not_configured' = no agent connected
-// (Setup is the fix). Any other error keeps the server's message when present, else the
-// caller's own localized fallback.
-export const errText = (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
-  : err?.code === 'disabled' ? t('radar.error.budget')
-    : err?.code === 'not_configured' ? t('radar.error.notConfigured')
-      : err?.code === 'timeout' ? t('error.timeout')
-        : err instanceof TypeError ? t('error.network')
-          : (err?.message || t(fallbackKey)));
+// Humanize an action error BY CODE, never by raw prose (issue 7, raw-error sweep G1): the
+// one-job-per-client lock's 409 ('in_flight') and a browser network TypeError (Safari's own
+// message is literally "Load failed") both used to land verbatim on a German-capable surface.
+// The scan-start refusals get their own lines too: 'disabled' = the daily agent budget is spent
+// (the next scheduled scan runs by itself, nothing is broken) and 'not_configured' = no agent
+// connected (Setup is the fix). Everything else goes through humanizeAction, the same rules
+// every other surface uses: a timeout, a dead local pendpost, a sentence the Studio wrote itself
+// (plainError), or else the caller's own plain fallback. The raw server line is NEVER the text;
+// errAlert hands it back as `raw`, for the shared InfoTip "?" only.
+const CODED_REFUSALS = {
+  in_flight: 'radar.error.busy',
+  disabled: 'radar.error.budget',
+  not_configured: 'radar.error.notConfigured',
+};
+export function errAlert(err, t, fallbackKey = 'error.action') {
+  // A not_configured that names a platform is the approve-time lane refusal, not the radar
+  // "no agent connected" one: humanizeAction owns that sentence.
+  const key = err?.platform ? null : CODED_REFUSALS[err?.code];
+  if (!key) return humanizeAction(err, t, { fallbackKey });
+  const text = t(key);
+  const raw = typeof err?.message === 'string' && err.message.trim() ? err.message.trim() : null;
+  return { text, raw: raw && raw !== text ? raw : null, known: true };
+}
+export const errText = (err, t, fallbackKey) => errAlert(err, t, fallbackKey).text;
+// For a "<verb> ging nicht. {reason}" sentence: the reason is a known sentence or nothing, so the
+// generic fallback never trails the verb ("Senden ging nicht. Das hat nicht geklappt.") and no raw
+// line does. `vars` are the key's other placeholders ({platform}).
+export function errReason(err, t, key, vars = {}) {
+  const a = errAlert(err, t, 'error.action');
+  return { text: t(key, { ...vars, reason: a.known ? a.text : '' }).trim(), raw: a.raw };
+}
 
 // The pendpost UI always acts as the owner - they are its only user. Agents use
 // the MCP face with their own actor strings.
@@ -890,7 +912,10 @@ export const radarDraftComparison = (backlogKey) => postJson('/api/radar/compari
 // the all-projects overview - resolveClientId reads it from the POST body, so an
 // action on a foreign-project signal lands in ITS workspace, never the active one.
 // Single-client mode passes undefined and the write binds the active client.
-export const radarTriage = (source, externalId, action, clientId) => postJson('/api/radar/triage', { source, externalId, action, actor: ACTOR, clientId });
+// `feedback` (optional, 'less' | 'more') steers the scanning agent: 'less' dismisses AND keeps
+// the signal as a not-relevant example for its search; 'more' keeps it as a more-like-this
+// example without dismissing (pass action null). Resolves the same body plus { feedback, queryId }.
+export const radarTriage = (source, externalId, action, clientId, feedback) => postJson('/api/radar/triage', { source, externalId, ...(action ? { action } : {}), ...(feedback ? { feedback } : {}), actor: ACTOR, clientId });
 // Granular filters: BULK dismiss a LIST of cached signals in one call (POST
 // /api/radar/triage-bulk -> triageSignalsBulk). Backs "delete all displayed" and
 // "dismiss all from this query". `ids` = [{ source, externalId }]. A WATCHED signal is
@@ -904,6 +929,10 @@ export const radarTriageBulk = (ids, action = 'dismiss', clientId) => postJson('
 // here to re-insert + clear their seen entries. GUI-only (no MCP twin by design). clientId
 // scopes a foreign-project signal's undo in the all-projects overview. Resolves { ok, restored }.
 export const radarRestore = (signals, clientId) => postJson('/api/radar/restore', { signals, actor: ACTOR, clientId });
+// Relevance plan 1e: the query tuner (POST /api/radar/tune -> lib/writes.mjs radarTune). The
+// By-search view applies or dismisses a proposal (proposalId) and undoes an applied change
+// (logId). Resolves { ok, action, ... } or throws; the caller invalidates ['radar'].
+export const radarTune = (action, { proposalId, logId } = {}) => postJson('/api/radar/tune', { action, proposalId, logId, actor: ACTOR });
 // G8 (ux-audit 2026-08-04): the SAME triage route also declines one GEO comparison-backlog
 // entry, identified by backlogKey instead of source+externalId. dismiss = drop it durably
 // (the dismissedBacklog ledger; a re-scan never re-mints it), clear = undo. The caller

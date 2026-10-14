@@ -102,6 +102,52 @@ try {
   const anchoredCompetitor = scoreSignal('The Buffer scheduler is too pricey for what it does.', {}, { competitorsDefault: ['Buffer'] });
   ok(anchoredCompetitor.intentTags.includes('competitor-mention'), `"Buffer scheduler ..." (domain named) keeps competitor-mention (${anchoredCompetitor.intentScore})`);
 
+  // ---- (a1c) long-form posts + off-topic text must not score as buyer intent (2026-09-25) ----
+  // Live root cause: federated Mastodon BLOG POSTS (a 76k-char essay, a grocery-bag listicle, a
+  // taxi diary) scored 60-75 because every intent regex was tested against the WHOLE text - on a
+  // long enough text every pattern fires somewhere. The scorer now reads a bounded opening window,
+  // and a window with no topical anchor (domain word, the query's own keywords, a real competitor)
+  // is capped below the medium tier.
+  const liveSwitch = { id: 'q_switch', keywords: ['buffer alternative', 'hootsuite too expensive', 'cancel buffer', 'cheaper than hootsuite', 'Later alternative', 'Typefully alternative'] };
+  const liveSelfhost = { id: 'q_selfhost', keywords: ['self-hosted social scheduler', 'open source buffer alternative', 'self host social posting', 'own your data social', 'no SaaS scheduler', 'Postiz', 'Mixpost'] };
+  const liveDefaults = { competitorsDefault: ['Buffer', 'Hootsuite', 'Later', 'Metricool', 'Publer', 'Typefully', 'Mixpost', 'Postiz'] };
+  const nowIso = new Date().toISOString();
+  // A long neutral essay (generated, never a pasted 76k blob) with intent phrases scattered PAST the
+  // opening window - the exact shape that used to fire every pattern.
+  const filler = 'The afternoon light fell across the orchard while the old dog slept by the gate. ';
+  const scattered = ['What tool should I use for this, I wondered.', 'Is there an alternative to waiting?', 'I hate how the frost comes early.', 'Can anyone recommend a good book?', 'We will talk about it later.', 'Honestly it was worth it.', 'Looking for a way home.'];
+  let longText = filler.repeat(25);
+  for (const phrase of scattered) longText += filler.repeat(120) + phrase + ' ';
+  longText += filler.repeat(200);
+  ok(longText.length > 50000, `generated long-form fixture is long (${longText.length} chars)`);
+  const longScore = scoreSignal(longText, liveSelfhost, { ...liveDefaults, ts: nowIso });
+  ok(longScore.intentScore < 30, `long-form text with intent phrases scattered past the window scores low (${longScore.intentScore})`);
+  ok(!longScore.intentTags.includes('competitor-mention') && !longScore.intentTags.includes('buying-question'), `phrases outside the scoring window add no tags (${longScore.intentTags.join(',')})`);
+  // Short off-topic posts in the style of the live junk: they share words with the queries
+  // ("alternative", "later", "worth it", "hate") but talk about groceries, a taxi, a diary.
+  for (const [label, text] of [
+    ['grocery-bag listicle', 'Organic cotton mesh bags: build a plastic-free grocery routine. Discover simple swaps that are better than single-use plastic, a real alternative to the flimsy produce bags. Is it worth it? I hate waste, and I will weigh the savings later.'],
+    ['taxi diary', "It was difficult and then it's not. I'm on my way in a taxi to the bus station, tired of the rain, frustrated with the timetable. Any recommendations for a cafe near the terminal? I'll sort the rest out later."],
+    ['personal diary', 'My diary #252. Woke up late, hate Mondays. Better than last week though. Which one of the two trails should we hike? We can decide later, or pick the alternative route along the river.'],
+    ['link-only anchor', "Even if the workarounds later in this thread end up working for you, start moving communities off Discord now. It sucks that there's not an obvious alternative to move them to. RE: https://bsky.app/profile/did:plc:abc/post/3mw7nxabkhk2t"],
+    ['event listing', "Looking for things to do this Tuesday? Social runs, music bingo and an open mic. The later start is an alternative to the 6 p.m. club, and the venue's schedule is worth it."],
+    ['media round-up', 'August media round-up: horror movies vs slasher classics, which one is worth it? Can anyone recommend a scarier film? The sequel is better than the original. More reviews later.'],
+  ]) {
+    const s = scoreSignal(text, liveSwitch, { ...liveDefaults, ts: nowIso });
+    ok(s.intentScore < 30 && (s.suggestedAction === 'ignore' || s.suggestedAction === 'watch'), `${label} (off-topic, fresh) stays below the medium tier (${s.intentScore}/${s.suggestedAction})`);
+  }
+  // The anchor is honest both ways: the SAME kind of question is kept when it is on-topic.
+  const genuine = scoreSignal('What tool should I use to schedule social posts? Buffer got too expensive, any recommendations for a self-hosted alternative?', liveSelfhost, { ...liveDefaults, ts: nowIso });
+  ok(genuine.intentScore >= 60, `a genuine short buying question still scores high (${genuine.intentScore})`);
+  const genuineKw = scoreSignal('Has anyone moved from Hootsuite to Postiz? Looking for a way to self-host.', liveSelfhost, { ...liveDefaults, ts: nowIso });
+  ok(genuineKw.intentScore >= 30, `a question naming a real competitor keeps its medium+ score (${genuineKw.intentScore})`);
+  // A query keyword anchors a non-scheduling niche (a coaching client) the domain regex knows nothing about.
+  const coachQuery = { id: 'q_coach', keywords: ['business coach'] };
+  const coachQ = scoreSignal('Kann mir jemand einen guten Business Coach in Zürich empfehlen? Ich suche jemanden mit Erfahrung.', coachQuery, { ts: nowIso });
+  ok(coachQ.intentScore >= 30, `a query keyword counts as the topical anchor (coaching niche: ${coachQ.intentScore})`);
+  const coachNoAnchor = scoreSignal('Kann mir jemand einen guten Bäcker in Zürich empfehlen? Ich suche frisches Brot.', coachQuery, { ts: nowIso });
+  ok(coachNoAnchor.intentScore < 30, `the same phrasing off-topic for that query stays low (${coachNoAnchor.intentScore})`);
+
   // ---- (a2) the default library is BILINGUAL (EN + de/de-CH) and covers SERVICE-seeking ----
   // Non-English markets (e.g. a Swiss coaching platform) must get useful scores OUT OF THE BOX,
   // without hand-writing intentPatterns. German buyer language + "looking for a coach/consultant"
@@ -277,6 +323,12 @@ try {
   // ---- (review #7) numeric-epoch ts is coerced so recency/prune work --------
   const epochSig = normalizeSignal({ source: 'reddit', externalId: 'e1', text: 't', ts: Math.floor(Date.now() / 1000) });
   ok(typeof epochSig.ts === 'string' && !Number.isNaN(Date.parse(epochSig.ts)), 'normalizeSignal coerces a numeric epoch ts to a Date.parse-able ISO string (review #7)');
+
+  // ---- (2026-09-25) the stored text is capped, whatever a source hands over ---
+  const { RADAR_STORED_TEXT_CAP } = await import('../lib/radar.mjs');
+  const hugeSig = normalizeSignal({ source: 'mastodon', externalId: 'h1', text: 'x'.repeat(RADAR_STORED_TEXT_CAP * 20) });
+  ok(RADAR_STORED_TEXT_CAP >= 2000 && hugeSig.text.length === RADAR_STORED_TEXT_CAP, `normalizeSignal caps stored text at ${RADAR_STORED_TEXT_CAP} chars (got ${hugeSig.text.length})`);
+  ok(normalizeSignal({ source: 'reddit', externalId: 's1', text: 'short text' }).text === 'short text', 'a short text is stored untouched');
 
   // ---- (review #8) scoreSignal never throws on a malformed config -----------
   let threw = false;

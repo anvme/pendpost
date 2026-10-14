@@ -23,6 +23,7 @@ const gbpAttributesSetMock = vi.fn(() => Promise.resolve({ ok: true, id: 'attrib
 vi.mock('../../lib/api.js', () => ({
   // WP6: Setup reads the radar capability table for the per-card scan switch
   useSignals: () => ({ data: undefined, isLoading: false }),
+  usePlans: () => ({ data: undefined }),
   usePendpostHealth: () => ({
     data: {
       ok: true, ready: false,
@@ -82,6 +83,13 @@ function renderSetup() {
       </TooltipProvider>
     </QueryClientProvider>,
   );
+}
+
+// What the owner reads: the InfoTip's sr-only description (the raw line) is not on screen.
+function visibleText(el) {
+  const c = el.cloneNode(true);
+  c.querySelectorAll('.sr-only').forEach((n) => n.remove());
+  return c.textContent;
 }
 
 async function expandGbpCard() {
@@ -147,6 +155,26 @@ describe('Setup — GBP location media + attributes controls (spec 19)', () => {
     await user.type(screen.getByLabelText('Local file path'), 'media/render.jpg');
     await user.click(screen.getByRole('button', { name: 'Add photo' }));
     await waitFor(() => expect(gbpMediaAddMock).toHaveBeenCalledWith({ filePath: 'media/render.jpg', category: 'COVER' }));
+  });
+
+  it('a failed "Add photo" says one plain sentence; the raw engine line only behind the "?"', async () => {
+    gbpMediaAddMock.mockRejectedValueOnce(new Error('gbp: POST media: HTTP 403 - PERMISSION_DENIED'));
+    const { container } = renderSetup();
+    const user = await expandGbpCard();
+    await user.type(screen.getByLabelText('Public URL'), 'https://example.com/new.jpg');
+    await user.click(screen.getByRole('button', { name: 'Add photo' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Could not save. Reload and try again.'));
+    expect(visibleText(container)).not.toMatch(/HTTP 403|PERMISSION_DENIED/);
+    expect(screen.getByText('gbp: POST media: HTTP 403 - PERMISSION_DENIED')).toHaveClass('sr-only');
+  });
+
+  it('a failed attribute save names the expired connection in plain words, never the raw HTTP line', async () => {
+    gbpAttributesSetMock.mockRejectedValueOnce(new Error('gbp: PATCH attributes: HTTP 401 - Unauthorized'));
+    const { container } = renderSetup();
+    const user = await expandGbpCard();
+    await user.click(screen.getByRole('switch', { name: 'Has wifi' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('The connection has expired. Reconnect Google Business Profile.'));
+    expect(visibleText(container)).not.toMatch(/HTTP 401|PATCH/);
   });
 
   it('a boolean attribute is the house Switch - one flip auto-saves via gbp_attributes_set', async () => {

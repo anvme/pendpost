@@ -153,13 +153,26 @@ describe('PostDetail "Send zap" action (spec 20)', () => {
     await waitFor(() => expect(screen.getByText('Connect a Lightning wallet (NWC) in Setup to enable zaps.')).toBeInTheDocument());
   });
 
-  it('shows the error state when the zap fails (wallet reject)', async () => {
-    sendZapMock.mockRejectedValueOnce(new Error('wallet declined'));
+  it('a failed zap says the plain sentence; the raw wallet line rides the "?" only', async () => {
+    sendZapMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
     const user = userEvent.setup();
     renderDetail(publishedNostrPost);
     await openZapModal(user);
     await user.click(screen.getByRole('button', { name: 'Send zap' }));
-    await waitFor(() => expect(screen.getByText('wallet declined')).toBeInTheDocument());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The zap could not be sent.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a message-less zap failure still leaves the plain sentence as the alert', async () => {
+    sendZapMock.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderDetail(publishedNostrPost);
+    await openZapModal(user);
+    await user.click(screen.getByRole('button', { name: 'Send zap' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The zap could not be sent.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
   });
 
   it('is accessible with the zap modal open (axe clean)', async () => {

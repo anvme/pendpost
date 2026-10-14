@@ -1,5 +1,5 @@
-import { AlertTriangle, BadgeCheck, CalendarClock, CheckCircle, Clock, OctagonX, PauseCircle, Pencil, RefreshCw, Send } from 'lucide-react';
-import { getActiveLocale } from './i18n.js';
+import { AlertTriangle, BadgeCheck, CalendarClock, CheckCircle, Clock, Copy, OctagonX, PauseCircle, Pencil, PlugZap, RefreshCw, Send, UserRound } from 'lucide-react';
+import { getActiveLocale, makeT } from './i18n.js';
 
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -216,17 +216,35 @@ export function fmtDateShort(date) {
   return new Intl.DateTimeFormat(dateLocale(), { timeZone: TZ, day: 'numeric', month: 'numeric', year: 'numeric' }).format(date);
 }
 
-export function fmtRange(start, end) {
-  const d = new Intl.DateTimeFormat(dateLocale(), { timeZone: TZ, day: 'numeric', month: 'short' });
-  return `${d.format(start)} - ${d.format(end)}`;
+// The word between the two ends of a date range ("bis" / "to"). Owner copy rule: no
+// spaced hyphen and no dash character, and Intl's own range formatter emits a dash, so
+// every range is composed by hand around this word.
+function rangeWord() {
+  return makeT(getActiveLocale())('format.rangeTo');
 }
 
-// All-numeric DD.MM range for narrow header widths, where the month-name form
-// ("22. Juni - 28. Juni") would force the toolbar onto a second line. Locale-aware
-// like fmtRange, but two-digit day + month so de-CH and en both read "22.06".
+// "21. bis 27. Sept." / "Sep 21 to 27" in one month, "29. Sept. bis 5. Okt." /
+// "Sep 29 to Oct 5" across months. The month is written once when both ends share it,
+// on the side the locale itself puts it (after the day in de-CH, before it in en-US).
+export function fmtRange(start, end) {
+  const d = new Intl.DateTimeFormat(dateLocale(), { timeZone: TZ, day: 'numeric', month: 'short' });
+  const word = rangeWord();
+  const a = d.formatToParts(start);
+  const b = d.formatToParts(end);
+  const monthOf = (parts) => parts.find((p) => p.type === 'month')?.value;
+  if (monthOf(a) !== monthOf(b)) return `${d.format(start)} ${word} ${d.format(end)}`;
+  const join = (parts) => parts.map((p) => p.value).join('').trim();
+  const mA = a.findIndex((p) => p.type === 'month');
+  if (a.findIndex((p) => p.type === 'day') < mA) return `${join(a.slice(0, mA))} ${word} ${d.format(end)}`;
+  const mB = b.findIndex((p) => p.type === 'month');
+  return `${d.format(start)} ${word} ${join(b.slice(mB + 1))}`;
+}
+
+// All-numeric range for narrow header widths, where the month-name form would force the
+// toolbar onto a second line: "21.09. bis 27.09." / "09/21 to 09/27". Same word as fmtRange.
 export function fmtRangeShort(start, end) {
   const d = new Intl.DateTimeFormat(dateLocale(), { timeZone: TZ, day: '2-digit', month: '2-digit' });
-  return `${d.format(start)} - ${d.format(end)}`;
+  return `${d.format(start)} ${rangeWord()} ${d.format(end)}`;
 }
 
 // Monday 00:00 (local) of the week containing `date`.
@@ -283,12 +301,12 @@ export function fmtInt(n) {
 // grey (not yet in motion) -> light-green (in motion, human-cleared) -> deep-green
 // (published). Defined ONCE here and spread into every status map below (STATE_META,
 // APPROVAL_META, STATUS_PILL_META, ROW_STATUS_META) so a bucket can never drift a
-// half-shade between the pill, the accent bar and the month dot.
+// half-shade between the pill and the accent bar.
 //
-// `cls` = pill tint (`bg-<c>/<a> text-<c>-<n> dark:text-<c>-<n> ring-<c>/<a>`), `dot`
-// = the solid month-cell dot (it carries the staircase most legibly, so deep vs light
-// are kept clearly apart: red-600 vs rose-400, emerald-600 vs emerald-400), `bar`/
-// `strip` = the two Planner attention-accent styles. Every text pairing clears WCAG
+// `cls` = pill tint (`bg-<c>/<a> text-<c>-<n> dark:text-<c>-<n> ring-<c>/<a>`), `bar`/
+// `strip` = the two Planner attention-accent styles. There is no per-status dot colour: the
+// month view shows the pill's own glyph (r5-b1), since a dot was status by colour alone.
+// Every text pairing clears WCAG
 // 2.2 AA (>= 4.5:1) on BOTH app body backgrounds (light #f8fafc / dark #09090b);
 // measured ratios (light / dark): deepRed red-700 6.18 / red-300 10.48; lightRed
 // rose-700 6.01 / rose-300 10.52 (rose-600 is 4.49 and fails light, hence rose-700);
@@ -297,14 +315,14 @@ export function fmtInt(n) {
 // signal - every pill still leads with its own lucide icon + carries a text label
 // (WCAG 1.4.1); the stops are told apart by icon + label, not hue alone.
 export const STAIR = {
-  rejected: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/40', dot: 'bg-red-600', bar: 'bg-red-600', strip: 'bg-red-500/10' },
-  halted: { cls: 'bg-rose-400/15 text-rose-700 dark:text-rose-300 ring-rose-400/30', dot: 'bg-rose-400', bar: 'bg-rose-400', strip: 'bg-rose-400/10' },
-  pending: { cls: 'bg-zinc-500/12 text-zinc-600 dark:text-zinc-300 ring-zinc-500/25', dot: 'bg-zinc-400', bar: 'bg-zinc-400', strip: 'bg-zinc-500/10' },
-  inMotion: { cls: 'bg-emerald-400/15 text-emerald-700 dark:text-emerald-400 ring-emerald-400/30', dot: 'bg-emerald-400', bar: 'bg-emerald-400', strip: 'bg-emerald-400/10' },
-  published: { cls: 'bg-emerald-600/18 text-emerald-800 dark:text-emerald-300 ring-emerald-600/45', dot: 'bg-emerald-600', bar: 'bg-emerald-600', strip: 'bg-emerald-600/10' },
+  rejected: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/40', bar: 'bg-red-600', strip: 'bg-red-500/10' },
+  halted: { cls: 'bg-rose-400/15 text-rose-700 dark:text-rose-300 ring-rose-400/30', bar: 'bg-rose-400', strip: 'bg-rose-400/10' },
+  pending: { cls: 'bg-zinc-500/12 text-zinc-600 dark:text-zinc-300 ring-zinc-500/25', bar: 'bg-zinc-400', strip: 'bg-zinc-500/10' },
+  inMotion: { cls: 'bg-emerald-400/15 text-emerald-700 dark:text-emerald-400 ring-emerald-400/30', bar: 'bg-emerald-400', strip: 'bg-emerald-400/10' },
+  published: { cls: 'bg-emerald-600/18 text-emerald-800 dark:text-emerald-300 ring-emerald-600/45', bar: 'bg-emerald-600', strip: 'bg-emerald-600/10' },
 };
 
-// Structural only: `cls` = pill tint, `dot` = month-view status dot color (UX-05),
+// Structural only: `cls` = pill tint,
 // `Icon` = a decorative (aria-hidden) lucide glyph the pills lead with, matching the
 // TimeChip's icon+tone treatment (DESIGN.md section 3). The pills still carry their
 // text label, so the icon is coherence, never the sole signal (WCAG 1.4.1).
@@ -314,30 +332,34 @@ export const STAIR = {
 // which states exist while carrying no prose. Every entry draws its tone from the
 // shared STAIR (above), so the lifecycle progression is one palette, not per-map hues.
 export const STATE_META = {
-  posted: { cls: STAIR.published.cls, dot: STAIR.published.dot, Icon: CheckCircle },
-  'scheduled-native': { cls: STAIR.inMotion.cls, dot: STAIR.inMotion.dot, Icon: CalendarClock },
-  'fired-assumed': { cls: STAIR.published.cls, dot: STAIR.published.dot, Icon: Send },
+  posted: { cls: STAIR.published.cls, Icon: CheckCircle },
+  'scheduled-native': { cls: STAIR.inMotion.cls, Icon: CalendarClock },
+  'fired-assumed': { cls: STAIR.published.cls, Icon: Send },
   // Verify read-back outcomes (lib/verify.mjs): confirmed live on every targeted
   // platform, or read back not-live/missing. They refine 'fired-assumed'.
-  'verified-live': { cls: STAIR.published.cls, dot: STAIR.published.dot, Icon: BadgeCheck },
-  'verify-failed': { cls: STAIR.halted.cls, dot: STAIR.halted.dot, Icon: AlertTriangle },
-  'waiting-due': { cls: STAIR.inMotion.cls, dot: STAIR.inMotion.dot, Icon: Clock },
-  overdue: { cls: STAIR.halted.cls, dot: STAIR.halted.dot, Icon: OctagonX },
+  'verified-live': { cls: STAIR.published.cls, Icon: BadgeCheck },
+  'verify-failed': { cls: STAIR.halted.cls, Icon: AlertTriangle },
+  'waiting-due': { cls: STAIR.inMotion.cls, Icon: Clock },
+  overdue: { cls: STAIR.halted.cls, Icon: OctagonX },
   // The platform refused it (lib/plans.mjs lastFailureFor). Same light-red HALTED stop
   // as overdue - both are stalled failures - but its own icon and label, because
   // "overdue" reads as "pendpost was not running" and that is a lie here. Only a
   // rejected post earns the DEEP red; a failure that pendpost can retry stays light.
-  'publish-failed': { cls: STAIR.halted.cls, dot: STAIR.halted.dot, Icon: AlertTriangle },
+  'publish-failed': { cls: STAIR.halted.cls, Icon: AlertTriangle },
   // A publish that HICCUPED but is NOT terminal (lastFailure.terminal === false): the
   // platform stumbled (e.g. Instagram's intermittent rupload ProcessingFailedError) and
   // pendpost is auto-retrying it. Not the red HALTED stop - the system is handling it, so
   // it reads as the calm GREY "working" stop with a retry glyph, never the alarm red the
   // old code showed for a post it was already recovering. Reserves red for terminal:true.
-  'publish-retrying': { cls: STAIR.pending.cls, dot: STAIR.pending.dot, Icon: RefreshCw },
-  parked: { cls: STAIR.pending.cls, dot: STAIR.pending.dot, Icon: PauseCircle },
+  'publish-retrying': { cls: STAIR.pending.cls, Icon: RefreshCw },
+  // A failure no retry can fix (lastFailure.recovery: reconnect / manual / edit, engine-
+  // classified in lib/publish-hold.mjs failureRecovery). Same light-red HALTED stop as
+  // publish-failed, but it names who acts next: the operator, never "retrying".
+  'publish-needs-you': { cls: STAIR.halted.cls, Icon: UserRound },
+  parked: { cls: STAIR.pending.cls, Icon: PauseCircle },
 };
 
-// Structural only; ApprovalPill resolves the label via t('approval.<key>'). `Icon`
+// Structural only; labels resolve via t('approval.<key>'). `Icon`
 // is decorative (aria-hidden), mirroring the TimeChip tones (approved=CheckCircle,
 // pending=Clock, rejected=OctagonX) for cross-surface coherence. Draft + pending sit
 // on the GREY stop (not yet in motion); approved steps to light-green (human-cleared);
@@ -396,7 +418,7 @@ export function timeChipTone(post, lane = {}) {
 // needs attention when its collapsed status (postStatusKey) is draft / pending /
 // rejected / overdue - i.e. it is not yet settled (scheduled / posted / parked).
 // This is the single predicate the Planner card (accent + saturated pill) and the
-// month dot share, so the two surfaces can never disagree on what is "urgent".
+// month chip share, so the two surfaces can never disagree on what is "urgent".
 const ATTENTION_STATUS = new Set(['draft', 'pending', 'rejected', 'overdue']);
 export function needsAttention(post) {
   return ATTENTION_STATUS.has(postStatusKey(post));
@@ -404,40 +426,41 @@ export function needsAttention(post) {
 
 // Structural only (like STATE_META): the ONE unified status the Planner surfaces
 // render, keyed by postStatusKey's collapsed bucket - the SINGLE SOURCE OF TRUTH for
-// the card pill, its accent, AND the month dot, so they can never drift (e.g. a
-// draft-that-is-also-past-due reads as "draft" everywhere, not slate on the card but
-// red on the dot). `cls` = pill tint (attention buckets saturated; settled buckets
+// the card pill, its accent, AND the month chip glyph, so they can never drift (e.g. a
+// draft-that-is-also-past-due reads as "draft" everywhere). `cls` = pill tint (attention buckets saturated; settled buckets
 // quiet/ghost so a done card recedes in the week grid). `bar`/`strip` = the two
 // attention-accent styles (left bar vs. tinted band); settled buckets carry neither.
-// `dot` = the month-cell status dot (settled buckets still get a distinct calm hue so
-// the month view can tell upcoming from published at a glance). `Icon` is a decorative
+// `Icon` is a decorative
 // lead glyph (the pill keeps its text label, so color is never the sole signal, WCAG
 // 1.4.1). Labels resolve from the pack under the status.<bucket> keys (already present
 // for the Status filter), so this map carries no prose.
 export const STATUS_PILL_META = {
-  draft: { cls: STAIR.pending.cls, bar: STAIR.pending.bar, strip: STAIR.pending.strip, dot: STAIR.pending.dot, Icon: Pencil },
-  pending: { cls: STAIR.pending.cls, bar: STAIR.pending.bar, strip: STAIR.pending.strip, dot: STAIR.pending.dot, Icon: Clock },
-  rejected: { cls: STAIR.rejected.cls, bar: STAIR.rejected.bar, strip: STAIR.rejected.strip, dot: STAIR.rejected.dot, Icon: OctagonX },
-  overdue: { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, dot: STAIR.halted.dot, Icon: OctagonX },
+  draft: { cls: STAIR.pending.cls, bar: STAIR.pending.bar, strip: STAIR.pending.strip, Icon: Pencil },
+  pending: { cls: STAIR.pending.cls, bar: STAIR.pending.bar, strip: STAIR.pending.strip, Icon: Clock },
+  rejected: { cls: STAIR.rejected.cls, bar: STAIR.rejected.bar, strip: STAIR.rejected.strip, Icon: OctagonX },
+  overdue: { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, Icon: OctagonX },
   // verify-failed filters under the 'overdue' "needs attention" bucket (postStatusKey)
   // but keeps its OWN visible treatment (postDisplayStatusKey): a post that fired and
   // read back not-live is not "pendpost wasn't running", so the planner card must not
   // mislabel it the red "Overdue". Shares the light-red HALTED stop with overdue so the
-  // calendar pill/accent/dot match the StatusPill on the detail + run-now surfaces; its
+  // calendar pill/accent/glyph match the StatusPill on the detail + run-now surfaces; its
   // own icon + label ("Ungeprüft") is what tells it apart, not a separate hue.
-  'verify-failed': { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, dot: STAIR.halted.dot, Icon: AlertTriangle },
+  'verify-failed': { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, Icon: AlertTriangle },
   // Same light-red HALTED stop as overdue (a refusal IS a stalled failure), different
   // icon + label: "Overdue" tells the owner pendpost was not running, the wrong fix.
-  'publish-failed': { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, dot: STAIR.halted.dot, Icon: AlertTriangle },
+  'publish-failed': { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, Icon: AlertTriangle },
   // Non-terminal hiccup, pendpost is auto-retrying (see STATE_META['publish-retrying']):
   // GREY "working" stop, and NO attention accent (bar/strip empty, like scheduled) - the
   // system is recovering it, so the card must not wear the red left-edge alarm.
-  'publish-retrying': { cls: STAIR.pending.cls, bar: '', strip: '', dot: STAIR.pending.dot, Icon: RefreshCw },
+  'publish-retrying': { cls: STAIR.pending.cls, bar: '', strip: '', Icon: RefreshCw },
+  // No retry can land it; the operator acts next (see STATE_META['publish-needs-you']).
+  // The light-red HALTED stop WITH the attention accent: this card genuinely needs you.
+  'publish-needs-you': { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, Icon: UserRound },
   // Settled, in-motion: light-green. No attention accent (bar/strip empty) - the card
   // is on track, so it carries the staircase tone without the left-edge alarm.
-  scheduled: { cls: STAIR.inMotion.cls, bar: '', strip: '', dot: STAIR.inMotion.dot, Icon: CalendarClock },
-  posted: { cls: STAIR.published.cls, bar: '', strip: '', dot: STAIR.published.dot, Icon: CheckCircle },
-  parked: { cls: STAIR.pending.cls, bar: '', strip: '', dot: STAIR.pending.dot, Icon: PauseCircle },
+  scheduled: { cls: STAIR.inMotion.cls, bar: '', strip: '', Icon: CalendarClock },
+  posted: { cls: STAIR.published.cls, bar: '', strip: '', Icon: CheckCircle },
+  parked: { cls: STAIR.pending.cls, bar: '', strip: '', Icon: PauseCircle },
 };
 
 // Which cards visually recede (dimmed): only the "set aside" buckets - parked
@@ -448,7 +471,7 @@ export function postIsDimmed(post) {
   return k === 'parked' || k === 'rejected';
 }
 
-// The VISIBLE status bucket for the planner surfaces (card pill, accent, month dot).
+// The VISIBLE status bucket for the planner surfaces (card pill, accent, month chip glyph).
 // Identical to postStatusKey EXCEPT verify-failed is NOT folded into 'overdue': it
 // still FILTERS as overdue ("needs attention"), but a fired-then-read-back-not-live
 // post (e.g. a YouTube video left private past its publishAt) is not the same as
@@ -461,62 +484,103 @@ export function postDisplayStatusKey(post) {
   // Same reasoning for a REFUSED post: it filters as overdue, but showing the owner
   // "past due, pendpost wasn't running" when a platform actually rejected the post sends
   // them to start a scheduler that is already running. The reason rides on post.lastFailure.
-  if (post.derivedState === 'publish-failed') {
-    // A NON-terminal failure is one pendpost is auto-retrying (a transient platform
-    // hiccup) - it is not "Failed", it is "Retrying". Only a terminal failure (parked
-    // after the retry window, or a hard refusal) keeps the red 'publish-failed' pill.
-    // A HALTED failure (the lane is circuit-broken, e.g. X 402 credits depleted) is
-    // NOT auto-retrying either, so it keeps the honest red pill - never "Retrying".
-    // Filtering is unchanged (postStatusKey still folds both into 'overdue').
-    return post.lastFailure && post.lastFailure.terminal === false && !post.lastFailure.halted ? 'publish-retrying' : 'publish-failed';
-  }
+  if (post.derivedState === 'publish-failed') return failedDisplayKey(post.lastFailure);
   return postStatusKey(post);
 }
 
+// The visible key for a publish-failed post, shared by the card bucket and the StatusPill
+// so the two surfaces can never disagree. Filtering is unchanged (postStatusKey still
+// folds every one of these into 'overdue'). Precedence, first match wins:
+//   - HALTED (the lane is circuit-broken, e.g. X 402 credits depleted): not auto-retrying,
+//     and its recovery is the banner's resume, so it keeps the honest red pill.
+//   - a `recovery` (lib/publish-hold.mjs failureRecovery: reconnect / manual / edit): no
+//     retry can land it, so it names who acts next - the operator - never "Retrying".
+//   - NON-terminal: pendpost is auto-retrying a transient hiccup, so "Retrying".
+//   - anything else (parked after the retry window, a hard refusal): red "Failed".
+export function failedDisplayKey(f) {
+  if (!f || f.halted) return 'publish-failed';
+  if (f.recovery) return 'publish-needs-you';
+  return f.terminal === false ? 'publish-retrying' : 'publish-failed';
+}
+
+// The failure a surface may SHOW for this post, or null. post.lastFailure alone is not
+// enough: the engine derives it from the attempts tail (lib/plans.mjs lastFailureFor), and a
+// reschedule or re-approve leaves that tail alone, so a post moved to a new slot arrives
+// waiting-due / scheduled WITH its old failure. Only a post whose derived state is
+// publish-failed (the pill then reads one of the failedDisplayKey words) is failing now,
+// so the card reason and the detail banner follow the state, never the field.
+export function liveFailure(post) {
+  return post?.derivedState === 'publish-failed' && post.lastFailure ? post.lastFailure : null;
+}
+
 // The VISIBLE derivedState for the two-axis StatusPill (detail / run-now dialog), which
-// keys STATE_META by the raw derivedState. Mirrors postDisplayStatusKey's one refinement:
-// a non-terminal publish-failed reads as 'publish-retrying' so that surface agrees with
-// the planner card ("the two surfaces can never disagree"). Everything else is unchanged.
+// keys STATE_META by the raw derivedState. Mirrors postDisplayStatusKey's one refinement
+// for a publish-failed post (failedDisplayKey). Everything else is unchanged.
 export function postDisplayState(post) {
-  if (post?.derivedState === 'publish-failed' && post.lastFailure && post.lastFailure.terminal === false && !post.lastFailure.halted) {
-    return 'publish-retrying';
-  }
+  if (post?.derivedState === 'publish-failed') return failedDisplayKey(post.lastFailure);
   return post?.derivedState;
 }
 
-// Month-cell status dot, derived from the SAME visible bucket as the card pill
-// (STATUS_PILL_META) so the month view and the week/list cards never disagree on a
-// post's status - the previous overdue-first precedence painted a draft-that-is-also
-// -past-due red on the dot while the card read it as a quiet "draft".
-export function postDot(post) {
-  return STATUS_PILL_META[postDisplayStatusKey(post)]?.dot || 'bg-zinc-400';
-}
-
-// The ONE status the overview cards render (List row, Week card). Identical to
-// postDisplayStatusKey EXCEPT an approved-and-on-track post (bucket 'scheduled',
-// approval 'approved') reads as a calm GREEN 'approved' instead of the neutral zinc
-// 'scheduled'. This is the single place the human-approval gate turns green on the
-// overview - brand/DESIGN.md section 3 (approved = emerald CheckCircle) - so the owner
-// sees "Freigegeben" at a glance instead of a dark neutral chip on one side and an
-// unrelated pill on the other. Every ATTENTION bucket (draft/pending/rejected/overdue/
-// verify-failed/publish-failed) still wins over it via postDisplayStatusKey, so green is
-// the quiet baseline and never competes with an urgent tone on the same row (canon:
-// colour is spent on attention). Keyed off the same visible bucket as the card/dot, so
-// the two can never drift. A rejected post is never 'scheduled', so it is unaffected.
-export function rowStatusKey(post) {
+// The ONE status word a post carries: the Week card, the List row AND the post detail
+// header all render this key (PostStatusPill), so one post can never read "Freigegeben"
+// on its card, "Geplant" in its detail and "Blockiert" on its delivery row. It starts from
+// the visible bucket (postDisplayStatusKey, so every failure / overdue / posted / parked /
+// rejected word is unchanged and keeps precedence) and refines only the calm buckets:
+//   - a target lane that is meant to publish but is not connected (blockedLanes, the SAME
+//     predicate the detail's delivery row uses) reads 'blocked', the delivery row's own
+//     word, whatever the approval: approving it publishes nothing until it is connected;
+//   - a post whose only unconnected lane is a genuinely manual paste lane (MANUAL_LANES,
+//     today reddit) reads 'postYourself' ("Du postest selbst"): posting it by hand IS the
+//     path, so "Blockiert" would send the owner to the wrong fix;
+//   - a handed-off post reads 'fired-assumed' ("Wahrscheinlich"), not a green "approved";
+//   - an approved post edited since approval reads 'edited' ("Neu freigeben"): the gate
+//     refuses it until re-approval, so the green would be a false all-clear;
+//   - an approved, on-track post reads the calm GREEN 'approved' (brand/DESIGN.md section
+//     3: approved = emerald CheckCircle), the quiet baseline that never competes with an
+//     attention tone on the same row.
+// `setup` is the pendpost-health setup payload; without it no lane reads blocked.
+export function postStatusWord(post, setup = null) {
   const key = postDisplayStatusKey(post);
-  if (key === 'scheduled' && post?.approval === 'approved') return 'approved';
+  if (key !== 'scheduled' && key !== 'draft' && key !== 'pending') return key;
+  if (post?.derivedState === 'fired-assumed') return 'fired-assumed';
+  const offline = unconnectedLanes(post, setup);
+  if (offline.some((p) => !MANUAL_LANES.has(p))) return 'blocked';
+  if (offline.length) return 'postYourself';
+  if (key === 'scheduled' && post?.approval === 'approved') return post.editedSinceApproval ? 'edited' : 'approved';
   return key;
 }
 
-// STATUS_PILL_META plus the green 'approved' baseline (emerald, CheckCircle) that
-// rowStatusKey introduces. Reuses APPROVAL_META.approved's tone so the overview's green
-// matches the detail/approval surfaces exactly. Its label resolves from approval.approved
-// ("Freigegeben"), NOT a status.<key> (there is no 'approved' status bucket) - the row
-// status component handles that one label mapping.
+// The unconnected lanes that are meant to publish: unconnectedLanes minus the genuinely
+// manual paste lanes (MANUAL_LANES), whose hand-off is the path, not a fault. These are
+// the lanes "Blockiert" names and whose Setup card the connect route opens.
+export function blockedLanes(post, setup) {
+  return unconnectedLanes(post, setup).filter((p) => !MANUAL_LANES.has(p));
+}
+
+// The words that ask the owner for something (the needsAttention buckets, as words, plus
+// the refinements the owner must act on). Settled words (approved, scheduled,
+// fired-assumed, posted, parked) may stay quiet on a phone row; these never do.
+// publish-retrying is deliberately NOT here: pendpost retries on its own, so the owner has
+// nothing to do yet (it turns into publish-failed / publish-needs-you when that changes).
+export const ATTENTION_WORDS = new Set(['draft', 'pending', 'rejected', 'overdue', 'verify-failed', 'publish-failed', 'publish-needs-you', 'blocked', 'postYourself', 'edited']);
+
+// STATUS_PILL_META plus the words only postStatusWord introduces. The labels all resolve
+// from status.<key>; each new one is the word the detail surfaces already spoke
+// (approval.approved, approval.editedSinceApproval, approval.postYourself,
+// state.short.fired-assumed, and the delivery row's "Blockiert: ..."), guarded equal in
+// the tests. Amber for blocked and edited matches the delivery row and the old re-approve
+// pill: the owner acts next. postYourself keeps the sky AND the Copy glyph of the hand-off
+// button it pairs with, so it never shares blocked's PlugZap shape (the Month chip shows the
+// glyph without the word, so two words must differ in shape, not only in hue).
+const AMBER_PILL = 'bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30';
+const SKY_PILL = 'bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30';
 export const ROW_STATUS_META = {
   ...STATUS_PILL_META,
-  approved: { cls: STAIR.inMotion.cls, bar: '', strip: '', dot: STAIR.inMotion.dot, Icon: CheckCircle },
+  approved: { cls: STAIR.inMotion.cls, bar: '', strip: '', Icon: CheckCircle },
+  'fired-assumed': { cls: STAIR.published.cls, bar: '', strip: '', Icon: Send },
+  edited: { cls: AMBER_PILL, bar: '', strip: '', Icon: AlertTriangle },
+  blocked: { cls: AMBER_PILL, bar: '', strip: '', Icon: PlugZap },
+  postYourself: { cls: SKY_PILL, bar: '', strip: '', Icon: Copy },
 };
 
 // Title-case a campaign id's base segment: "meta-rollout" -> "Meta Rollout".
@@ -569,6 +633,31 @@ export function postDisplayTitle(post, fallback) {
 // truth so the picker and the campaign management table agree.
 export function activeCampaigns(campaigns) {
   return (campaigns || []).filter((c) => c.active === true);
+}
+
+// ── The ONE readiness judge for a "Respond for me" reply lane ──────────────────────────
+// Every surface that names a reply lane's state (the Radar Auto-Antwort lane list, the Settings
+// "Für mich antworten" ledger) calls this, so one lane never reads two ways. It folds the two
+// engine facts GET /api/engage carries per lane:
+//   credential  the stored-credential fact: 'none' | 'stored' | 'live' for an API lane, null for
+//               a browser lane (its credential is the owner's Chrome login)
+//   reason      the engage probe's verdict ('checking' = nothing has probed it yet)
+// Returns one of: 'no_credential' | 'not_checked' | 'checking' | 'ready' | 'not_logged_in' |
+// 'wrong_account' | 'confirm_handle' | 'cooling_down'.
+//   - a probe verdict keeps its own word (a failed API probe already reads no_credential). It
+//     is also what the engine acts on (`usable` follows it), so the word never outruns it.
+//   - 'checking' only while a probe is genuinely in flight (`probing`), never a resting state.
+//   - never probed, nothing stored: "Nicht verbunden", with the connect route.
+//   - never probed, a credential the Setup liveness probe proved: ready (the same probe engage
+//     runs for an API lane).
+//   - anything else (stored, or a browser lane nobody probed) is "Noch nicht geprüft".
+export function replyLaneState(runtime, { probing = false } = {}) {
+  const rt = runtime || {};
+  if (rt.reason && rt.reason !== 'checking') return rt.reason;
+  if (probing) return 'checking';
+  if (rt.credential === 'none') return 'no_credential';
+  if (rt.credential === 'live') return 'ready';
+  return 'not_checked';
 }
 
 // ── Spec 37: the account-warmth publish ADVISORY judge (app-side MIRROR twin) ──────────
@@ -847,23 +936,30 @@ export function handOffTarget(post, platform, accounts) {
   return { platform, url: null };
 }
 
-// A radar reply-to / signal carries the source post's canonical URL on the AUTHOR's own
-// instance (Mastodon status.url). Opening that lands the operator as an anonymous visitor on
-// a remote instance ("Sign in to continue") even though they're signed into their OWN
-// instance. When the source is Mastodon and we know our home instance, rewrite the link so the
-// thread opens where the operator is already signed in: the status is federated onto our
-// instance under externalId (the SAME id the reply fires at - NOT the id in the remote url,
-// which is the author-instance id), so /@author/externalId is the local thread. Non-Mastodon
-// sources and the disconnected case pass the URL through unchanged, mirroring handOffTarget.
+// A radar Mastodon signal's `url` is the post's canonical URL on the AUTHOR's instance.
+// Opening it lands the operator anonymously on a remote instance, so we route to the HOME
+// instance where they are signed in. `externalId` is a home-instance id ONLY for signals from
+// the engine's own home-instance search (it differs from the id in the remote url). Agent-found
+// signals carry the author-instance id (== the url's trailing id) or a sha256 fallback: pairing
+// that with the home host 404s (2026-09-30). For those, the home instance resolves the canonical
+// url itself via authorize_interaction. Non-Mastodon sources and the disconnected case pass the
+// URL through unchanged, mirroring handOffTarget.
 export function mastodonThreadUrl({ source, url, author, externalId } = {}, accounts) {
   if (source !== 'mastodon') return url || null;
   const instance = String(accounts?.mastodon?.instanceUrl || '').replace(/\/+$/, '').trim();
   if (!instance) return url || null;
   const acct = String(author || '').replace(/^@/, '').trim();
   const id = String(externalId || '').trim();
-  if (acct && id) return `${instance}/@${acct}/${id}`;               // full thread, logged in
-  if (url) return `${instance}/authorize_interaction?uri=${encodeURIComponent(url)}`; // resolver fallback
-  return url || null;
+  const home = hostOf(instance);
+  if (url && home && hostOf(url) === home) return url;                // already on the home instance
+  const urlId = (String(url || '').match(/\/(\d+)\/?$/) || [])[1] || '';
+  if (acct && /^\d+$/.test(id) && id !== urlId) return `${instance}/@${acct}/${id}`; // home-search id
+  if (url) return `${instance}/authorize_interaction?uri=${encodeURIComponent(url)}`; // resolver
+  return null;
+}
+
+function hostOf(u) {
+  try { return new URL(u).host.toLowerCase(); } catch { return ''; }
 }
 
 // The publish advisories for ONE reddit post, as displayed in the app (the Freigaben warmth
@@ -1413,7 +1509,7 @@ export function pollDurationKey(minutes) {
 export function fieldRelevance(platforms = [], type = 'reel') {
   const has = (p) => platforms.includes(p);
   const anyBlog = has('wordpress') || has('ghost');
-  const liArticle = has('linkedin') && type === 'text'; // Composer isLinkedinArticle
+  const liArticle = has('linkedin') && type === 'text'; // ui.jsx isLinkedinArticle
   // Spec 18: a Nostr NIP-23 long-form article reuses the blog long-form authoring UI
   // (title/body/excerpt/image/hashtags). Its content is the Markdown body, so the
   // short-note caption + nostrCaption are meaningless for it - suppressed below to keep
@@ -1690,33 +1786,6 @@ export function visiblePlatforms(accounts, posting) {
   });
 }
 
-// The Radar sources a scan can actually search right now: the evidence behind whether
-// "Scan now" renders, and behind the per-source rows that say why a source is quiet.
-//
-// hackernews is ALWAYS scannable - it needs no credential (RADAR_SOURCE_SCOPE.hackernews
-// is null; the engine queries Algolia unauthenticated). It used to be excluded here, back
-// when an agent copy-paste block was the primary path and the engine scan was a demoted
-// fallback that "must not show for every operator". That block is gone and pendpost's own
-// scan is the only scan, so the premise died and the conclusion inverts: excluding a
-// working keyless source would leave the zero-credential operator with no way to scan at
-// all, which is the dead end the demotion was trying to avoid in the first place.
-//
-// The credentialed three keep two honest signals, no third: reddit/mastodon ride their
-// Setup connection (the accountStatus every other surface reads); bluesky has no Setup
-// card at all (creds are .env-only), so its only evidence is the persisted last-scan
-// status - a source that returned ok ran with working credentials. `web` is agent-ingested
-// and never searchable.
-const KEYLESS_RADAR_SOURCES = ['hackernews'];
-const ENGINE_RADAR_SOURCES = ['reddit', 'mastodon', 'bluesky'];
-const SETUP_RADAR_SOURCES = ['reddit', 'mastodon'];
-export function scannableRadarSources(accounts, sources) {
-  const credentialed = ENGINE_RADAR_SOURCES.filter((src) => {
-    if (SETUP_RADAR_SOURCES.includes(src) && platformConnected(src, accounts)) return true;
-    return sources?.[src]?.ok === true;
-  });
-  return [...KEYLESS_RADAR_SOURCES, ...credentialed];
-}
-
 // The client mirror of lib/radar.mjs effectiveRadarSources (WP6): which sources this
 // project's scans cover, for the glyph strips. Same rules - explicit flag wins, searchable
 // lanes default ON, agent-found reply lanes default ON when connected (accounts evidence, or
@@ -1783,16 +1852,6 @@ export function agentNoteExcerpt(text, max = 120) {
   const at = cut.lastIndexOf(' ');
   const head = (at > max * 0.6 ? cut.slice(0, at) : s.slice(0, max)).replace(/[\s,;:.-]+$/, '');
   return { excerpt: `${head}…`, truncated: true };
-}
-
-// The connect state of ONE Radar source, for the per-source rows: 'keyless' (no credential
-// exists to give it), 'scanning' (credentialed and searched), or 'needsConnecting'. Split
-// out from scannableRadarSources because the rows must distinguish "nothing to connect" from
-// "connected" - collapsing those two into one green state is how the panel used to imply it
-// was searching Reddit when Reddit was never wired up.
-export function radarSourceState(src, accounts, sources) {
-  if (KEYLESS_RADAR_SOURCES.includes(src)) return 'keyless';
-  return scannableRadarSources(accounts, sources).includes(src) ? 'scanning' : 'needsConnecting';
 }
 
 // The platform chips the filter bar offers. visiblePlatforms answers "which lanes
@@ -1892,6 +1951,26 @@ export function isLate(post) {
   return post.derivedState === 'overdue' || postStatusKey(post) === 'overdue';
 }
 
+// What the ONE attention slot says (the sidebar chip, and the header beacon that stands in
+// for it on small screens). Its word comes from the SAME display state the card shows
+// (postDisplayState), so one post carries one word everywhere: a refusal only the operator
+// can fix reads "Wartet auf dich" on its card, so it is never counted as "Überfällig".
+// The slot names the next actor: while any late post waits on the operator it reads
+// "Wartet auf dich: n" and counts exactly those (nothing else will ever move them);
+// otherwise "Überfällig: n" over every late post, as before. Both open the at-risk list
+// (the 'overdue' filter), which contains every post either count includes.
+// A late post the platform refused with a TRANSIENT error reads "Wird wiederholt" on its
+// card: pendpost retries it on its own, so its next actor is not the operator and calling
+// it "Überfällig" contradicted the card. It is left out of the slot; once the retries run
+// out it turns publish-failed / needs-you and is counted under that word.
+// Returns { kind: 'needs-you' | 'overdue', count } or null when nothing is late.
+export function attentionSummary(posts) {
+  const late = (posts || []).filter((p) => isLate(p) && postDisplayState(p) !== 'publish-retrying');
+  const needsYou = late.filter((p) => postDisplayState(p) === 'publish-needs-you').length;
+  if (needsYou) return { kind: 'needs-you', count: needsYou };
+  return late.length ? { kind: 'overdue', count: late.length } : null;
+}
+
 // A post the scheduler would act on RIGHT NOW, mirroring runDue's gate
 // (lib/scheduler.mjs lanesFor). Two cases, both requiring approval:
 //   1. PUBLISH: derivedState 'overdue' (past due, a pending lane still owed -
@@ -1979,8 +2058,10 @@ export function isActionable(post) {
 //   done            system - posted/verified-live, nothing left to do.
 //   publish-failed  you    - the platform refused it (renders as today's red pill).
 //   overdue         you    - past due with pendpost still owing a lane (red pill).
-//   handOff         you    - a target lane is unconnected: approval publishes
-//                            nothing, YOU post it (beats every schedule claim).
+//   blocked         you    - a lane meant to publish is not connected: approval
+//                            publishes nothing until you connect it (postStatusWord).
+//   handOff         you    - the only unconnected lane is a manual paste lane
+//                            (MANUAL_LANES): YOU post it (beats every schedule claim).
 //   reApprove       you    - approved but edited since: needs a fresh decision
 //                            (beats the auto-approved provenance).
 //   clientSignoff   client - awaiting the client's sign-off (the ReviewStatusChip
@@ -1999,7 +2080,12 @@ export function nextActorOf(post, setup) {
   if (!post.reviewPending && (post.derivedState === 'publish-failed' || post.derivedState === 'overdue')) {
     return { key: post.derivedState, actor: 'you' };
   }
-  if (unconnectedLanes(post, setup).length) return { key: 'handOff', actor: 'you' };
+  // The lane block comes from the SAME status word the planner card, List row and detail
+  // header wear (postStatusWord), so the queue can never say something they do not: a lane
+  // meant to publish reads 'blocked' (connect it), a manual paste lane alone 'handOff'.
+  const word = postStatusWord(post, setup);
+  if (word === 'blocked') return { key: 'blocked', actor: 'you' };
+  if (word === 'postYourself') return { key: 'handOff', actor: 'you' };
   if (post.approval === 'approved' && post.editedSinceApproval) return { key: 'reApprove', actor: 'you' };
   if (post.reviewPending) return { key: 'clientSignoff', actor: 'client' };
   if (post.approval === 'rejected') return { key: 'rejected', actor: 'you' };
@@ -2093,9 +2179,11 @@ export function collectThread(post, posts = []) {
 
 // Outcome of a publish_due_run for ONE post, from the server's `ran` rows (the
 // per-lane truth: ok only when a result row actually succeeded). Callers
-// localize: `held` = the cloud owns the lane inside its handoff grace, `reason`
-// = the first real failure's message. rows.length === 0 means nothing was
-// dispatched at all (not due / not approved / already posted).
+// localize: `held` = the cloud owns the lane inside its handoff grace, `failure`
+// = the first real failing row in the post.lastFailure shape ({ lane, message, code }),
+// which callers hand straight to humanizeFailure (the raw engine text is never a
+// ready-made sentence). rows.length === 0 means nothing was dispatched at all
+// (not due / not approved / already posted).
 export function publishRunOutcome(res, postId) {
   const rows = (res?.ran || []).filter((r) => r.postId === postId);
   const fired = rows.some((r) => r.ok);
@@ -2103,8 +2191,22 @@ export function publishRunOutcome(res, postId) {
   // `halted` = the lane is paused by an account-level circuit breaker (X 402 credits,
   // lib/scheduler.mjs) and was dropped before dispatch. Mirrors `held`: the click did
   // not fail, it just cannot fire until the operator resumes the lane. Both marker codes
-  // are excluded from `reason` so a genuine per-lane failure still surfaces its message.
+  // are excluded from `failure` so a genuine per-lane failure still surfaces.
   const halted = !fired && rows.some((r) => r.errorCode === 'lane_halted');
-  const fail = rows.find((r) => !r.ok && r.errorCode !== 'cloud_held' && r.errorCode !== 'lane_halted');
-  return { rows, fired, held, halted, reason: fail ? (fail.errorMessage || fail.errorCode) : null };
+  // `cloudWait` = the fail-closed backstop hold (lib/scheduler.mjs claim gate): the cloud
+  // already has this post and cannot answer the publish claim, so nothing goes out
+  // locally until it answers. Its own flag, not `held`: the held copy promises a local
+  // backstop within 20 minutes, which is exactly what does not happen here.
+  const cloudWait = !fired && rows.some((r) => r.errorCode === 'cloud_claim_wait');
+  const fail = rows.find((r) => !r.ok && !RUN_MARKER_CODES.has(r.errorCode));
+  // A failing row that carries neither a message nor a code has nothing to say: callers
+  // then fall back to their own "{lane} did not go out" line (rows.length).
+  const failure = fail && (fail.errorMessage || fail.errorCode)
+    ? { lane: fail.lane, message: fail.errorMessage || null, code: fail.errorCode || null }
+    : null;
+  return { rows, fired, held, halted, cloudWait, failure };
 }
+
+// The informational per-run markers the scheduler writes into `ran` for a lane it
+// deliberately did not dispatch. None of them is a failure.
+const RUN_MARKER_CODES = new Set(['cloud_held', 'lane_halted', 'cloud_claim_wait']);

@@ -121,7 +121,7 @@ describe('one confirm, then instant: optimistic removal + immediate close', () =
     expect(cachedIds(qc)).toEqual(['sibling']);
   });
 
-  it('a server refusal rolls the post back and the toast carries the message', async () => {
+  it('a server refusal rolls the post back and the toast says a plain sentence', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     deletePostMock.mockImplementation(() => Promise.reject(Object.assign(new Error('native cancel failed on ghost: relay down'), { code: 'engine_failure' })));
@@ -129,14 +129,42 @@ describe('one confirm, then instant: optimistic removal + immediate close', () =
     const dialog = await openDeleteConfirm(user);
     await user.click(within(dialog).getByRole('button', { name: /^delete$/i }));
     const toast = await screen.findByRole('alert');
-    expect(toast).toHaveTextContent(/delete failed/i);
     // F3: the KNOWN code (engine_failure) leads with a localized sentence; the raw
-    // engine string stays as the quoted detail, never the lead.
-    expect(toast).toHaveTextContent(/could not cancel the scheduled object/i);
-    expect(toast).toHaveTextContent(/native cancel failed on ghost/i);
+    // engine string is never inline, only the "?" description.
+    expect(toast).toHaveTextContent(/delete failed: the platform could not cancel the scheduled object/i);
+    expect(screen.queryByText(/native cancel failed on ghost/i, { ignore: '.sr-only' })).toBeNull();
+    // The "?" sits OUTSIDE the announced alert: the alert reads the sentence only.
+    expect(toast.textContent).not.toMatch(/native cancel failed/i);
+    expect(within(toast).queryByRole('button', { name: /more about this/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('native cancel failed on ghost: relay down');
     // The post is back exactly where it was - never silently lost.
     expect(cachedIds(qc)).toEqual(['p1', 'sibling']);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('a message-less refusal still says the plain sentence', async () => {
+    const user = userEvent.setup();
+    deletePostMock.mockImplementation(() => Promise.reject(new Error()));
+    renderDetail(base);
+    const dialog = await openDeleteConfirm(user);
+    await user.click(within(dialog).getByRole('button', { name: /^delete$/i }));
+    const toast = await screen.findByRole('alert');
+    expect(toast).toHaveTextContent('Delete failed. The post is back in the plan.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).toBeNull();
+  });
+
+  it('an English server error is not the toast text; it rides the "?" only', async () => {
+    const user = userEvent.setup();
+    deletePostMock.mockImplementation(() => Promise.reject(new Error('HTTP 500 internal')));
+    renderDetail(base);
+    const dialog = await openDeleteConfirm(user);
+    await user.click(within(dialog).getByRole('button', { name: /^delete$/i }));
+    const toast = await screen.findByRole('alert');
+    expect(toast).toHaveTextContent('Delete failed. The post is back in the plan.');
+    expect(screen.queryByText(/HTTP 500/, { ignore: '.sr-only' })).toBeNull();
+    expect(toast.textContent).toBe('Delete failed. The post is back in the plan.');
+    expect(within(toast).queryByRole('button', { name: /more about this/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
   });
 });
 

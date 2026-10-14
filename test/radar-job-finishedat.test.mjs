@@ -69,9 +69,10 @@ try {
   ok(mid && mid.finishedAt === null,
     `L8 regression: a phase/attempt patch on a RUNNING row leaves finishedAt null (got ${JSON.stringify(mid && mid.finishedAt)})`);
 
-  // Wait for the settle, then the stamp must be there.
+  // Wait for the settle, then the stamp must be there. 10s budget: the child is a spawned
+  // process, and on a loaded machine (parallel gate, other suites) spawn alone can eat 4s.
   let settled = null;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 100; i++) {
     settled = asClient(() => (loadState().radar.jobs || []).find((j) => j.id === started.job.id));
     if (settled && settled.state !== 'running') break;
     await new Promise((r) => setTimeout(r, 100));

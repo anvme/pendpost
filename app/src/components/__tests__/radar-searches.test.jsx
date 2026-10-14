@@ -20,18 +20,20 @@ let feedData;
 let accountsData;
 const saveConfigMock = vi.fn(() => Promise.resolve({}));
 
-vi.mock('../../lib/api.js', () => ({
-  useConfig: () => ({ data: configData, isLoading: false }),
-  useSignals: () => ({ data: feedData, isLoading: false }),
-  useAccounts: () => ({ data: accountsData }),
-  saveConfig: (...a) => saveConfigMock(...a),
-  // Issue 7: the real humanize-by-code helper, mirrored here since this suite mocks the
-  // whole module - matches app/src/lib/api.js's own implementation exactly (used by the
-  // DailyRunBlock save path, UX issue 4).
-  errText: (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
-    : err instanceof TypeError ? t('error.network')
-      : (err?.message || t(fallbackKey))),
-}));
+vi.mock('../../lib/api.js', async (importOriginal) => {
+  // The real error helpers (errText/errAlert), so the save paths are tested against the one
+  // plain path rather than a stub that could drift from it.
+  const real = await importOriginal();
+  return {
+    useConfig: () => ({ data: configData, isLoading: false }),
+    useSignals: () => ({ data: feedData, isLoading: false }),
+    useAccounts: () => ({ data: accountsData }),
+    saveConfig: (...a) => saveConfigMock(...a),
+    errText: real.errText,
+    errAlert: real.errAlert,
+    errReason: real.errReason,
+  };
+});
 
 function renderGeo() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -319,6 +321,24 @@ describe('RadarSearches query editor', () => {
     }, { timeout: 2000 });
   });
 
+  it('a new search keeps its editor mounted across the first auto-save (no lost keystrokes)', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /add a search/i }));
+    await user.type(screen.getByPlaceholderText(/scheduling tools/i), 'fresh');
+    const brief = screen.getByRole('textbox', { name: /what to watch for/i });
+    await user.click(brief);
+    // Longer than the 500ms debounce: the first save lands while the operator pauses.
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    configData = radarOn([Q1, saveConfigMock.mock.calls.at(-1)[1].posting.radar.queries.at(-1)]);
+    // Same element, still focused: typing carries on into the brief.
+    expect(screen.getByRole('textbox', { name: /what to watch for/i })).toBe(brief);
+    expect(brief).toHaveFocus();
+    // And the search is shown once (the editor), never editor + row.
+    expect(screen.queryAllByDisplayValue('fresh')).toHaveLength(1);
+  });
+
   it('the keyword/competitor narrowing sits behind a "narrow it down" disclosure, not on the first surface', async () => {
     const user = userEvent.setup();
     configData = radarOn([Q1]);
@@ -328,6 +348,48 @@ describe('RadarSearches query editor', () => {
     // so getByLabelText resolves, but they are no longer stacked above the intent).
     expect(screen.getByText(/narrow it down/i)).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: /what to watch for/i }).tagName).toBe('TEXTAREA');
+  });
+
+  // Deep link 'radar:<queryId>' (a signal's query chip "Edit", the By-search "Tune search"):
+  // Settings passes the id through, and the editor for exactly that search opens on arrival.
+  it('a focusQueryId deep link opens that search\'s editor', async () => {
+    const Q2 = { id: 'q2', label: 'agents', enabled: true, keywords: ['mcp social'] };
+    configData = radarOn([Q1, Q2]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider locale="en">
+          <ConfirmProvider>
+            <TooltipProvider>
+              <RadarSearches focus focusQueryId="q2" onNavigate={onNavigateMock} />
+            </TooltipProvider>
+          </ConfirmProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /close editor/i })).toBeInTheDocument());
+    expect(screen.getByDisplayValue('agents')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('scheduling')).not.toBeInTheDocument();
+    // Recognition over recall: the keywords the chip popover showed are visible on arrival (the
+    // "narrow it down" disclosure opens because the search carries narrowing), and the editor is
+    // headed by the search's own label.
+    const keywords = screen.getByDisplayValue('mcp social');
+    expect(keywords.closest('details')).toHaveAttribute('open');
+    const close = screen.getByRole('button', { name: /close editor/i });
+    expect(close.parentElement).toHaveTextContent(/^agents/);
+  });
+
+  it('a bare search keeps the disclosure folded, and Warm up / Brand mentions live inside it', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([{ id: 'q3', label: 'bare', enabled: true, sources: ['reddit'] }]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    const details = screen.getByText(/narrow it down/i).closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(details).toContainElement(screen.getByRole('switch', { name: /warm up/i }));
+    expect(details).toContainElement(screen.getByRole('switch', { name: /brand mentions/i }));
+    // Pause stays on the first surface: it is the search's own on/off axis.
+    expect(details).not.toContainElement(screen.getByRole('switch', { name: /pause this search/i }));
   });
 
   it('never persists an abandoned empty new draft (orphan guard)', async () => {
@@ -761,9 +823,14 @@ describe('RadarSearches delete (forgiveness)', () => {
   });
 });
 
-// WP5 (2026-07-17): the coverage strip is the SHARED RadarSourceGlyphs component - platform
-// glyphs with a status dot; the sentence lives in each glyph's accessible name (and tooltip),
-// and only sources with a Studio connect path render as buttons.
+// WP5 (2026-07-17): the coverage strip is the SHARED RadarSourceGlyphs component: one platform
+// glyph per source the scans cover, the sentence in each glyph's accessible name (and tooltip).
+// final-a7: the strip speaks about SCANNING only. It used to add a reply verdict ("replies post
+// from pendpost" / "connect it to reply") decided from scan coverage, while the Auto-Antwort lane
+// list and the Settings ledger name the same lane with the ONE reply judge (replyLaneState), so
+// Bluesky could read ready in the strip and "Not connected" one card below. Every glyph now reads
+// "{platform}: scanned." (the effective scan set is exactly what the scans cover), with no reply
+// badge and no connect button; connecting a reply lane lives with the reply judge.
 describe('RadarSearches source coverage (glyph strip)', () => {
   const CAPS = {
     reddit: { search: true, reply: true },
@@ -772,46 +839,31 @@ describe('RadarSearches source coverage (glyph strip)', () => {
     hackernews: { search: true, reply: false, copyDraft: true },
   };
   const coverage = () => screen.getByRole('list', { name: /sources these searches cover/i });
+  const REPLY_WORDS = /repl|connect|answer|draft|antwort|verbind|kopier/i;
 
-  it('lists every used source; HN carries the copy-paste state, never a connect affordance', () => {
+  it('every covered source reads "scanned", connected or not, and carries no reply verdict', () => {
     feedData = { ...feedData, capabilities: CAPS };
-    configData = radarOn([{ id: 'q1', label: 's', enabled: true, sources: ['reddit', 'hackernews'], keywords: ['x'], competitors: [], cadence: 'manual' }]);
-    renderSearches();
-    const cov = coverage();
-    const hn = within(cov).getByRole('img', { name: /hacker news: scanned\. answers arrive as copy-paste drafts/i });
-    expect(hn).toBeInTheDocument();
-    expect(within(cov).queryByRole('button', { name: /hacker news/i })).not.toBeInTheDocument();
-  });
-
-  it('an unconnected reply-capable source (reddit) is an amber connect BUTTON deep-linking to Setup', async () => {
-    const user = userEvent.setup();
-    feedData = { ...feedData, capabilities: CAPS };
-    accountsData = {}; // reddit not connected
-    configData = radarOn([{ id: 'q1', label: 's', enabled: true, sources: ['reddit'], keywords: ['x'], competitors: [], cadence: 'manual' }]);
-    renderSearches();
-    await user.click(within(coverage()).getByRole('button', { name: /reddit: scanned\. connect it to reply/i }));
-    // navigateTo(page, platform) forwards the platform straight through, so it is a STRING.
-    expect(onNavigateMock).toHaveBeenCalledWith('setup', 'reddit');
-  });
-
-  it('a connected source reads ready (replies post from pendpost), no connect to-do on it', () => {
-    feedData = { ...feedData, capabilities: CAPS };
-    accountsData = { reddit: { authenticated: true } };
+    accountsData = { reddit: { authenticated: true } }; // reddit connected, mastodon/bluesky not
     configData = radarOn([{ id: 'q1', label: 's', enabled: true, sources: ['reddit'], keywords: ['x'], competitors: [], cadence: 'manual' }]);
     renderSearches();
     const cov = coverage();
-    expect(within(cov).getByRole('img', { name: /reddit: scanned\. replies post from pendpost/i })).toBeInTheDocument();
-    expect(within(cov).queryByRole('button', { name: /reddit/i })).not.toBeInTheDocument();
+    const labels = within(cov).getAllByRole('img').map((g) => g.getAttribute('aria-label'));
+    expect(labels).toEqual(expect.arrayContaining(['Reddit: scanned.', 'Hacker News: scanned.', 'Bluesky: scanned.', 'Mastodon: scanned.']));
+    for (const l of labels) {
+      expect(l).toMatch(/^[\w ]+: scanned\.$/);
+      expect(l).not.toMatch(REPLY_WORDS);
+    }
   });
 
-  it('bluesky never renders as a connect button (no Studio connect path - .env only)', () => {
+  it('no glyph is a connect button, even for an unconnected reply-capable source', () => {
     feedData = { ...feedData, capabilities: CAPS };
-    accountsData = {}; // bluesky unconnected
-    configData = radarOn([{ id: 'q1', label: 's', enabled: true, sources: ['bluesky'], keywords: ['x'], competitors: [], cadence: 'manual' }]);
+    accountsData = {}; // nothing connected
+    configData = radarOn([{ id: 'q1', label: 's', enabled: true, sources: ['reddit'], keywords: ['x'], competitors: [], cadence: 'manual' }]);
     renderSearches();
     const cov = coverage();
-    expect(within(cov).getByRole('img', { name: /bluesky: scanned\. connect it to reply/i })).toBeInTheDocument();
-    expect(within(cov).queryByRole('button', { name: /bluesky/i })).not.toBeInTheDocument();
+    expect(within(cov).queryAllByRole('button')).toHaveLength(0);
+    expect(within(cov).getByRole('img', { name: 'Reddit: scanned.' })).toBeInTheDocument();
+    expect(within(cov).getByRole('img', { name: 'Bluesky: scanned.' })).toBeInTheDocument();
   });
 
   // WP6: the strip shows the EFFECTIVE scan set (Setup flags + auto-ready), so an explicit
@@ -833,5 +885,65 @@ describe('RadarSearches source coverage (glyph strip)', () => {
     configData = radarOn([{ id: 'q1', label: 's', enabled: true, sources: ['reddit'], keywords: ['x'], competitors: [], cadence: 'manual' }]);
     renderSearches();
     expect(screen.queryByRole('list', { name: /sources these searches cover/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('Radar settings save failures speak a plain sentence', () => {
+  const expectPlain = async () => {
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not save, try again');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  };
+
+  it('a failed buying-question save shows the sentence; the raw line rides the "?" only', async () => {
+    saveConfigMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderGeo();
+    await user.type(screen.getByLabelText(/add question/i), 'alternative to hootsuite?');
+    await user.click(screen.getByRole('button', { name: /^add question$/i }));
+    await expectPlain();
+  });
+
+  it('a failed brand save shows the sentence; the raw line rides the "?" only', async () => {
+    saveConfigMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    configData = brandOn({ facts: 'old facts' });
+    renderBrand();
+    const box = screen.getByLabelText(BRAND_FACTS_LABEL);
+    await user.clear(box);
+    await user.type(box, 'new facts');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await expectPlain();
+  });
+
+  it('a failed daily-switch save shows the sentence; the raw line rides the "?" only', async () => {
+    saveConfigMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('switch', { name: /automatic daily scan/i }));
+    await expectPlain();
+  });
+
+  it('a busy agent lock keeps its own coded sentence, not the save fallback', async () => {
+    saveConfigMock.mockRejectedValueOnce(Object.assign(new Error('HTTP 409 in_flight'), { code: 'in_flight' }));
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('switch', { name: /automatic daily scan/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('An agent run is already going for this project.');
+    expect(alert).not.toHaveTextContent(/HTTP 409/);
+  });
+
+  it('a message-less save failure still leaves the plain sentence as the alert', async () => {
+    saveConfigMock.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('switch', { name: /automatic daily scan/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save, try again');
+    expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
   });
 });

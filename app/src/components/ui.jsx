@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText, PlugZap, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
-import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, rowStatusKey, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtFull, fmtStampShort } from '../lib/format.js';
+import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
+import { STATE_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, ATTENTION_WORDS, postStatusWord, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtStampShort } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
 import { MediaLightbox } from './ui/MediaLightbox.jsx';
 import { CarouselPreview } from './ui/CarouselPreview.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW, FIELD, FIELD_ERR, FIELD_MULTILINE } from './ui/tokens.js';
-import { TAP_TARGET } from './ui/recipes.js';
+import { TAP_TARGET, PILL_TONES } from './ui/recipes.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
+import { useQuery } from '@tanstack/react-query';
 
 // The X (Twitter) brand glyph. lucide-react's `X` is the close/cross icon, and
 // lucide dropped brand marks, so the wordmark is an inline SVG here. fill follows
@@ -190,56 +191,17 @@ export function StatusPill({ state, short = false }) {
   // Known states resolve their (short/long) label from the pack; an unknown state
   // falls back to its raw key rather than a stray "state.x" id.
   const label = meta ? t(short ? `state.short.${state}` : `state.${state}`) : state;
-  // Power-off legibility (W1): the schedule states that carry a one-line tip
-  // (scheduled-native, waiting-due, overdue) get it as a native hover title;
-  // states with no `state.tip.<x>` key resolve t() back to the raw key, so we
-  // detect that and set no title rather than showing a stray id.
-  const tipKey = `state.tip.${state}`;
-  const tip = t(tipKey);
-  const title = tip === tipKey ? undefined : tip;
+  // Canon: no hover-only reveals, so the pill carries no native title (the PostStatusPill
+  // precedent). The approval card and the Published row open the post detail, which says
+  // the rest as visible text: the power-off truth in the delivery row, a failure's reason
+  // in the banner, Re-check on an unverified post, Publish now on an overdue one. The
+  // run-due dialog IS the publish-now action for every post it lists.
   // The icon is decorative (aria-hidden, shrink-0) and only the label truncates, so
   // the compact `short` pill keeps both glyph and word without crowding (WCAG 1.4.1).
   return (
-    <span title={title} className={`inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${cls}`}>
+    <span className={`inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${cls}`}>
       {Icon ? <Icon size={11} className="shrink-0" aria-hidden="true" /> : null}
       <span className="truncate">{label}</span>
-    </span>
-  );
-}
-
-export function ApprovalPill({ approval, editedSinceApproval = false, handOff = false }) {
-  const t = useT();
-  // The lane cannot publish, so "waiting for approval" is the wrong promise: there is no
-  // approval to wait for. This pill REPLACES it (never stacks beside it) and states the
-  // CONSEQUENCE, not the cause - "you post this yourself", which is the thing the operator
-  // has to know and the only thing that will actually happen. Sky, matching the hand-off
-  // button it belongs to; icon+text, never colour alone.
-  if (handOff) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30">
-        <PlugZap size={11} className="shrink-0" aria-hidden="true" />
-        {t('approval.postYourself')}
-      </span>
-    );
-  }
-  // Trust gate: an approved post whose content changed after approval reads as a
-  // distinct amber "re-approve" pill, NOT the settled green (which is hidden). The
-  // publish gate refuses it until re-approval, so it belongs in the attention tone.
-  if (approval === 'approved' && editedSinceApproval) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30">
-        <AlertTriangle size={11} className="shrink-0" aria-hidden="true" />
-        {t('approval.editedSinceApproval')}
-      </span>
-    );
-  }
-  const meta = APPROVAL_META[approval];
-  if (!meta || approval === 'approved') return null;
-  const Icon = meta.Icon;
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${meta.cls}`}>
-      {Icon ? <Icon size={11} className="shrink-0" aria-hidden="true" /> : null}
-      {t(`approval.${approval}`)}
     </span>
   );
 }
@@ -247,9 +209,9 @@ export function ApprovalPill({ approval, editedSinceApproval = false, handOff = 
 // ONE truthful next-actor chip per approval card (nextActorOf, lib/format.js).
 // Replaces the old ApprovalPill + schedule-side StatusPill + "Automatisch
 // freigegeben" IconBadge stack, whose three independent conditions could
-// contradict each other on one card. A plain <span> (native title for the
-// tooltip), so it may live INSIDE the card's open-detail button - the same
-// contract StatusPill/ApprovalPill honoured.
+// contradict each other on one card. A plain <span> with no title (canon: no
+// hover-only reveals), so it may live INSIDE the card's open-detail button (the
+// same contract StatusPill/ApprovalPill honoured).
 //
 // Keys that render NOTHING here are carried by a sibling: overdue/publish-failed
 // keep today's red StatusPill (the alarm treatment must not change), and
@@ -258,40 +220,36 @@ const NEXT_ACTOR_CHIP = 'inline-flex items-center gap-1 rounded-full px-2 py-0.5
 export function NextActorChip({ post, setup = null }) {
   const t = useT();
   const next = nextActorOf(post, setup);
-  const chip = (cls, Icon, label, title) => (
-    <span title={title} className={`${NEXT_ACTOR_CHIP} ${cls}`}>
+  const chip = (cls, Icon, label) => (
+    <span className={`${NEXT_ACTOR_CHIP} ${cls}`}>
       <Icon size={11} className="shrink-0" aria-hidden="true" />
       <span className="truncate">{label}</span>
     </span>
   );
   switch (next.key) {
     case 'done':
-      return chip('bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30', CheckCircle, t('state.short.posted'));
+      return chip(PILL_TONES.ok, CheckCircle, t('state.short.posted'));
+    // The lane states ARE the post's one status word (nextActorOf derives them from
+    // postStatusWord), so the queue renders the very pill the planner card, List row and
+    // detail header wear: "Blockiert" (amber, the lane named in the card text) or, on the
+    // manual paste lane, "Du postest selbst" (sky).
+    case 'blocked':
     case 'handOff':
-      return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', PlugZap, t('approval.postYourself'));
+      return <PostStatusPill post={post} setup={setup} />;
     case 'reApprove':
-      // B9/F4: when the suppressed state is an auto-approval, the provenance is a
-      // hover away - same native-title contract the scheduled branch uses.
-      return chip(
-        'bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30',
-        AlertTriangle,
-        t('approval.editedSinceApproval'),
-        post.approvalBy === 'policy:auto-approve' ? t('nextActor.reApprove.autoTip') : undefined,
-      );
+      // The edit invalidated the approval, however it was given, so the chip says only
+      // what is next: approve again. (Its auto-approve note was a hover-only title.)
+      return chip('bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30', AlertTriangle, t('approval.editedSinceApproval'));
     case 'approve':
       return chip('bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30', Clock, t('approval.pending'));
     case 'rejected':
       return chip('bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', OctagonX, t('approval.rejected'));
-    case 'scheduled': {
-      // The auto-approve PROVENANCE lives in this chip's tooltip now, not as a
-      // third badge: the state is "goes out at {time}" either way; how it got
-      // approved is the detail a hover answers.
-      const time = fmtStampShort(next.at);
-      const title = post.approvalBy === 'policy:auto-approve'
-        ? t('nextActor.scheduled.autoTip', { time: fmtFull(next.at) })
-        : fmtFull(next.at);
-      return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', CalendarClock, t('nextActor.scheduled', { time }), title);
-    }
+    case 'scheduled':
+      // The state is "goes out at {date · time}" however it was approved; the label
+      // already carries the date and time (fmtStampShort), so there is no hover-only
+      // title. The auto-approve provenance stays in Activity (the approve row names the
+      // policy actor) and in Settings, where the owner revokes the auto-approved backlog.
+      return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', CalendarClock, t('nextActor.scheduled', { time: fmtStampShort(next.at) }));
     case 'awaitingSlot':
       return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', Clock, t('nextActor.awaitingSlot'));
     default:
@@ -299,46 +257,42 @@ export function NextActorChip({ post, setup = null }) {
   }
 }
 
-// Triage-first: the ONE status pill the Planner cards render, collapsing the
-// approval + schedule axes into a single bucket (postStatusKey) so a card no longer
-// shows a StatusPill AND an ApprovalPill saying the same thing. Attention buckets are
-// saturated, settled buckets render quiet/ghost (STATUS_PILL_META). The label
-// resolves from the pack under the status.<bucket> keys (already present for the
-// Status filter); the lead icon is decorative (the label always carries the meaning,
-// WCAG 1.4.1). The richer two-axis StatusPill/ApprovalPill
-// stay in use on the detail/approval surfaces (PostDetail, Freigaben), where both
-// axes legitimately matter.
-export function PostStatusPill({ post }) {
+// The ONE status pill a post wears: the Week card, the List row and the post detail
+// header all render it, keyed by postStatusWord, so one post reads one word everywhere
+// (the approval + schedule axes collapse into a single word; a lane that is not
+// connected reads "Blockiert", the same word as the detail's delivery row). Attention
+// words are saturated, settled words render quiet/ghost (ROW_STATUS_META). The label
+// resolves from status.<key>; the lead icon is decorative (the label always carries the
+// meaning, WCAG 1.4.1).
+//
+// `setup` defaults to the pendpost-health payload already in the query cache (App.jsx
+// keeps usePendpostHealth live app-wide under this key); a cache-only read
+// (enabled:false, no queryFn) never starts a fetch of its own. The Month chip glyph reads the
+// same payload through the same hook, so chip and pill key one word.
+export function useCachedSetup(setup) {
+  const { data: health } = useQuery({ queryKey: ['pendpost-health'], enabled: false });
+  return setup === undefined ? health?.setup : setup;
+}
+
+export function PostStatusPill({ post, setup, quietOnPhone = false }) {
   const t = useT();
-  // rowStatusKey adds ONE bucket over postDisplayStatusKey: an approved, on-track post
-  // reads green 'approved' ("Freigegeben") instead of the neutral zinc 'scheduled'
-  // (brand/DESIGN.md section 3). Every attention bucket still overrides it, so green is
-  // the calm baseline, never a competing tone. ROW_STATUS_META carries that extra tone.
-  const key = rowStatusKey(post);
+  const lanes = useCachedSetup(setup);
+  const key = postStatusWord(post, lanes);
   const meta = ROW_STATUS_META[key] || STATUS_PILL_META.scheduled;
   const Icon = meta.Icon;
-  // Power-off legibility (W1): the planner card collapses scheduled-native and
-  // waiting-due into one 'scheduled' bucket, so its pill cannot show whether a
-  // post fires with the computer off. A one-line tip on the 'scheduled' bucket
-  // points the owner to the post for the per-platform truth. Other buckets have
-  // no `status.tip.<x>` key, so t() returns the raw key and we set no title.
-  const tipKey = `status.tip.${key}`;
-  const tip = t(tipKey);
-  // A failed post's ACTUAL reason (post.lastFailure.message - e.g. "...re-mirror the render
-  // or set imageUrl") is more useful than the generic "open it for the reason" tip, so
-  // surface it right on the pill: the operator reads WHY on the row without opening the
-  // drawer (the reason was previously only in PostDetail). Other buckets keep the generic tip.
-  const title = (key === 'publish-failed' && post.lastFailure?.message)
-    ? post.lastFailure.message
-    : (tip === tipKey ? undefined : tip);
-  // The green 'approved' bucket has no status.<key> label (it is not a Status-filter
-  // bucket) - it resolves from approval.approved ("Freigegeben"), the same word the
-  // detail/approval surfaces use. Every other bucket keeps its status.<key> label.
-  const label = key === 'approved' ? t('approval.approved') : t(`status.${key}`);
+  // Canon: no hover-only reveals, so the pill carries no native title. Each surface that
+  // wears it says what matters as visible text: the Blockiert reason (queue card, planner
+  // card + List row, detail delivery row), a failure's plain sentence (planner card + List
+  // row, detail banner), the paste lane (detail delivery row "Du postest selbst") and the
+  // per-platform power-off truth (detail). It never carries the raw failure line either.
+  const label = t(`status.${key}`);
   return (
-    <span title={title} className={`inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${meta.cls}`}>
+    // max-w-full + a wrapping word: in a narrow container (a Week card at 375px) the pill
+    // never runs past the card edge and never cuts its word ("Du postest selbs"); it wraps
+    // to a second line instead. Where it has room it stays one line (shrink-0).
+    <span className={`${quietOnPhone && !ATTENTION_WORDS.has(key) ? 'hidden md:inline-flex' : 'inline-flex'} min-w-0 max-w-full shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold leading-tight ring-1 ${meta.cls}`}>
       {Icon ? <Icon size={11} className="shrink-0" aria-hidden="true" /> : null}
-      <span className="truncate">{label}</span>
+      <span className="min-w-0">{label}</span>
     </span>
   );
 }
@@ -350,9 +304,11 @@ export function PostStatusPill({ post }) {
 // (see the previewText branch below); a genuine EMPTY post (no media, no text) or
 // a media LOAD ERROR resolves to an honest document-glyph tile - so a row NEVER
 // shows the ambiguous bare grey square that read as broken/loading (US media fix).
-export function CoverThumb({ media, image, textPreview = '', className = '' }) {
+export function CoverThumb({ media, image, textPreview = '', className = '', overlayInset = false }) {
   const [errored, setErrored] = useState(false);
-  const PLACEHOLDER = 'bg-zinc-200/70 dark:bg-zinc-800/60';
+  // One step above the card surface in both themes (INNER_SURFACE is zinc-100 / zinc-800), so
+  // the tile never vanishes into a dark card.
+  const PLACEHOLDER = 'bg-zinc-200/70 dark:bg-zinc-700/60';
   // media.cover = the render's local cover JPEG; image = a remote thumbnail
   // (e.g. a LinkedIn type:text article hero) for media-less posts.
   const src = media?.cover || image;
@@ -428,9 +384,12 @@ export function CoverThumb({ media, image, textPreview = '', className = '' }) {
   // text to a screen reader, so this never double-reads.
   const previewText = !errored && typeof textPreview === 'string' ? textPreview.trim() : '';
   if (previewText) {
+    // `overlayInset`: the caller lays controls over the tile's top edge (the planner
+    // card's ⋯ and time chip). The text then starts BELOW that row and clamps to the
+    // lines that fit under it, so a chip never sits on top of the words.
     return (
-      <div className={`overflow-hidden ${PLACEHOLDER} ${className}`} aria-hidden="true">
-        <p className="line-clamp-4 h-full w-full overflow-hidden p-1.5 text-[9px] font-medium leading-snug tracking-tight text-zinc-600 dark:text-zinc-300">
+      <div className={`overflow-hidden ${PLACEHOLDER} ${className}`} aria-hidden="true" data-text-preview="">
+        <p className={`${overlayInset ? 'line-clamp-2 px-1.5 pt-8' : 'line-clamp-4 h-full p-1.5'} w-full overflow-hidden text-[9px] font-medium leading-snug tracking-tight text-zinc-600 dark:text-zinc-300`}>
           {previewText}
         </p>
       </div>
@@ -450,17 +409,13 @@ export function CoverThumb({ media, image, textPreview = '', className = '' }) {
 // either theme. The card's own max-width (below) bounds the height, so the hero
 // never grows tall enough to force the dialog to scroll. Click to open the full
 // image in the shared full-screen viewer (the same affordance the media preview
-// uses); no image -> a calm, theme-aware placeholder tile.
-function CardHero({ image, noImageLabel }) {
+// uses). No image -> no hero at all: the card collapses to its title strip, which is
+// how the platform renders an image-less card too (a ~150px grey box that only said
+// "no preview image" was the biggest block on the card saying nothing).
+function CardHero({ image }) {
   const t = useT();
   const [zoom, setZoom] = useState(false);
-  if (!image) {
-    return (
-      <div className="flex aspect-[1.91/1] w-full items-center justify-center border-b border-dashed border-zinc-300 bg-zinc-200/40 px-3 text-center text-[11px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/40 dark:text-zinc-400">
-        {noImageLabel}
-      </div>
-    );
-  }
+  if (!image) return null;
   return (
     <>
       <button
@@ -479,6 +434,14 @@ function CardHero({ image, noImageLabel }) {
   );
 }
 
+// A text post aimed at LinkedIn: the one shape the LinkedIn article card belongs to.
+// Hoisted from Composer so every preview asks the same question.
+export const isLinkedinArticle = ({ platforms, type }) => !!platforms?.includes('linkedin') && type === 'text';
+// LinkedIn builds the card only when that post carries a link (the engine's article
+// branch in scripts/linkedin-social.mjs); without one the image is dropped and the
+// post goes out as plain text. Composer, PostPreview and the Freigaben card share it.
+export const showsLinkedinCard = (post) => isLinkedinArticle(post) && Boolean(post.link);
+
 // Read-only LinkedIn article-card preview (image + title + source host) so the
 // owner can verify the card before approving. Mirrors the 1.91:1 ratio LinkedIn
 // renders. Capped to a real card width (max-w-md) so the hero stays a modest,
@@ -496,7 +459,7 @@ export function LinkCardPreview({ image, title, link }) {
     <div className="w-full max-w-md space-y-1.5">
       <p className={EYEBROW}>{t('ui.linkCard.title')}</p>
       <div className={`overflow-hidden rounded-xl ring-1 ring-zinc-900/10 dark:ring-white/10 ${INNER_SURFACE}`}>
-        <CardHero image={image} noImageLabel={t('ui.linkCard.noImage')} />
+        <CardHero image={image} />
         <div className="space-y-0.5 p-3">
           <p className="break-words text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || 'pendpost'}</p>
           {host ? <p className="break-words text-[11px] tracking-tight text-zinc-500 dark:text-zinc-400">{host}</p> : null}
@@ -515,7 +478,7 @@ export function ArticleCardPreview({ image, title, excerpt }) {
     <div className="w-full max-w-md space-y-1.5">
       <p className={EYEBROW}>{t('ui.articleCard.title')}</p>
       <div className={`overflow-hidden rounded-xl ring-1 ring-zinc-900/10 dark:ring-white/10 ${INNER_SURFACE}`}>
-        <CardHero image={image} noImageLabel={t('ui.articleCard.noImage')} />
+        <CardHero image={image} />
         <div className="space-y-0.5 p-3">
           <p className="break-words text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || t('ui.articleCard.noTitle')}</p>
           {excerpt ? <p className="break-words text-xs leading-snug text-zinc-500 dark:text-zinc-400">{excerpt}</p> : null}
@@ -540,7 +503,8 @@ function YoutubeMeta({ title, description, tags }) {
 }
 
 // Per-type preview, the single place every post type renders its real shape.
-// text -> LinkedIn article card (never the old red "media missing" error);
+// text -> blog article card, or the LinkedIn card for a LinkedIn post with a link,
+// else nothing (never the old red "media missing" error);
 // reel/story/youtube-short -> 9:16 video; video (FB/IG/LinkedIn feed) -> 4:5;
 // youtube-longform -> 16:9 + a title/description/tags panel. object-contain so a
 // source whose aspect does not match its type letterboxes instead of cropping.
@@ -558,15 +522,14 @@ export function PostPreview({ post, videoRef, onEdit }) {
   const vRef = videoRef || localRef;
   if (post.type === 'text') {
     // A text post targeting a blog lane previews as its article card (hero +
-    // title + excerpt); every other text post keeps the LinkedIn link card.
+    // title + excerpt).
     if (post.platforms?.includes('wordpress') || post.platforms?.includes('ghost')) {
       return <ArticleCardPreview image={post.image} title={post.title} excerpt={post.excerpt} />;
     }
-    // A pure text post (no link, no image) has NOTHING to preview - render nothing
-    // rather than an empty "no image" link card that just eats width. The card only
-    // earns its space when there is a real link or image to show.
-    if (!post.link && !post.image) return null;
-    return <LinkCardPreview image={post.image} title={post.title} link={post.link} />;
+    // The LinkedIn card only where LinkedIn builds one. Every other text post (an X or
+    // Telegram post with a link, a LinkedIn post without one) publishes as plain text,
+    // so there is no card to preview: render nothing, never a card captioned LinkedIn.
+    return showsLinkedinCard(post) ? <LinkCardPreview image={post.image} title={post.title} link={post.link} /> : null;
   }
   // Flywheel: a MEDIA-LESS type has nothing to preview and must never reach the red
   // alert below. A poll and a nostr-longform carry a media object with a null url (the
@@ -816,6 +779,9 @@ function validateRowText(t, problem, code) {
 // error), and dropping it then leaves the "not connected" fact with no way out at all.
 // So the glyph yields only when the labelled link is genuinely there. Deriving that from
 // the same source both components already read beats mirroring the panel's internals.
+// PlatformBlockers keys its lane row AND its own render-nothing check off this predicate,
+// so a needsSetup lane with no problems still draws the link: the answer is exactly
+// "the panel renders the link", never a yes over an empty panel.
 export function setupLinkOffered(platformValidate, platform, onNavigate) {
   if (typeof onNavigate !== 'function') return false;
   const rows = platformValidate?.ok ? platformValidate.platforms || {} : {};
@@ -833,13 +799,14 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
   const entries = platformKeys.map((k) => [k, platforms[k] || { problems: [], warnings: [], needsSetup: false }]);
   const hasPlatformRows = entries.some(([k, v]) => {
     const pre = presubmitPlatforms[k];
+    if (setupLinkOffered(platformValidate, k, onNavigate)) return true;
     return (v.problems?.length || 0) + (v.warnings?.length || 0) + (pre?.problems?.length || 0) + (pre?.warnings?.length || 0) > 0;
   });
   const mediaRows = mediaCheckRows(validateMedia?.ok ? validateMedia.checks : null, t);
   // A draft/pending/rejected post isn't a fault - it's just waiting for the owner's
   // approval. Surface it as ONE neutral line - but ONLY where the approval state isn't
   // already shown elsewhere (`showApproval`). PostDetail passes false: its header
-  // ApprovalPill already carries the draft/rejected AND the "re-approve" states, so
+  // PostStatusPill already carries the draft/rejected AND the "re-approve" states, so
   // repeating them here would just say the same thing twice.
   const waitingApproval = showApproval && Boolean(approval) && approval !== 'approved';
   // Approved but content changed after approval: the gate refuses it until re-approval.
@@ -876,17 +843,18 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
           .filter((r) => !(showFlairFix && r.code === 'flairRequired'))
           .map((r) => presubmitRowText(t, r));
         const presubmitWarnings = (pre?.warnings || []).map((r) => presubmitRowText(t, r));
+        // The lane isn't connected: collapse the raw auth string to ONE amber
+        // "{platform} verbinden" link that opens Setup (where the connect action lives),
+        // instead of platform jargon the owner can't act on inline.
+        const showSetupLink = setupLinkOffered(platformValidate, platform, onNavigate);
         // showFlairFix counts: the flair row is REMOVED from presubmitProblems (it renders
         // as the action below instead), so a lane whose only finding is the missing flair
-        // would otherwise fall through this guard and drop the very control it needs.
-        if (!problems.length && !warnings.length && !presubmitProblems.length && !presubmitWarnings.length && !showFlairFix) return null;
+        // would otherwise fall through this guard and drop the very control it needs. The
+        // setup link counts the same way: a needsSetup lane with no problems keeps its link.
+        if (!problems.length && !warnings.length && !presubmitProblems.length && !presubmitWarnings.length && !showFlairFix && !showSetupLink) return null;
         const meta = PLATFORM_META[platform];
         const Icon = meta?.Icon;
         const label = meta?.label || platform;
-        // The lane isn't connected: collapse the raw auth string to ONE amber
-        // "Set up <lane>" link that opens Setup (where the connect action lives),
-        // instead of platform jargon the owner can't act on inline.
-        const showSetupLink = setupLinkOffered(platformValidate, platform, onNavigate);
         return (
           <div key={platform} className="space-y-1">
             <p className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
@@ -1197,7 +1165,8 @@ export function CloseButton({ onClose, label }) {
         type="button"
         onClick={onClose}
         aria-label={label}
-        className="rounded-full p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
+        // TAP_TARGET: the 30px glyph keeps its look, the finger gets 44px (canon Tier 2).
+        className={`rounded-full p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60 ${TAP_TARGET}`}
       >
         <X size={18} aria-hidden="true" />
       </button>

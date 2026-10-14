@@ -44,12 +44,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { handOffAfterCeremony } from '../lib/cli-cloud-handoff.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -548,7 +549,7 @@ async function cmdInsights(args) {
     RUN.results.push({ postId: null, platform: 'telegram', action: 'insights', ok: true, scope: 'account', metrics: { subscribers: Number(count) || 0 } });
     console.log(`[ok] Telegram subscribers: ${count}`);
   } catch (err) {
-    RUN.results.push({ postId: null, platform: 'telegram', action: 'insights', ok: false, scope: 'account', errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) });
+    RUN.results.push({ postId: null, platform: 'telegram', action: 'insights', ok: false, scope: 'account', errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) });
     console.error(`[err] getChatMemberCount failed - ${err.message}`);
   }
 }
@@ -921,6 +922,8 @@ async function main() {
     process.exit(2);
   }
   await cmd(args);
+  // A hand-run ceremony hands the new sign-in to the running pendpost (recheck + cloud reseal).
+  await handOffAfterCeremony({ command: args._[0], lane: 'telegram', results: RUN.results });
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
@@ -931,7 +934,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }

@@ -131,6 +131,18 @@ describe('CommentsPanel moderation overflow (spec 06)', () => {
     expect(await screen.findByText(/^hidden$/i)).toBeInTheDocument();
   });
 
+  it('a failed moderation says the plain sentence; the raw server line rides the "?" only', async () => {
+    moderateMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /^moderate$/i }));
+    await user.click(screen.getByRole('button', { name: /^unhide$/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Moderation failed.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
   it('is accessible (axe clean) with the overflow open', async () => {
     const user = userEvent.setup();
     const { container } = renderPanel();

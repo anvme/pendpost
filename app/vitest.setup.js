@@ -10,7 +10,17 @@ expect.extend(toHaveNoViolations);
 // Unmount and clear the jsdom DOM after every test so queries never match
 // leftover nodes from a previous test (RTL auto-cleanup is not guaranteed
 // under the single-fork pool we use for the Radix-bearing component trees).
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // Components persist UI prefs (e.g. Radar's `pendpost.radar.sort`) in Web Storage.
+  // On Node 20/22 jsdom's storage works, so one test's choice leaked into the next;
+  // on Node 25 the experimental global shadows it with a method-less object and every
+  // write is dropped, which hid the leak. Clearing after each test makes both behave
+  // the same: no test inherits another's storage.
+  for (const store of [globalThis.localStorage, globalThis.sessionStorage]) {
+    if (typeof store?.clear === 'function') store.clear();
+  }
+});
 
 // jsdom ships neither ResizeObserver nor Element.scrollIntoView, both of which
 // Radix's Popper (used by Tip/Popover) calls when a floating surface mounts.

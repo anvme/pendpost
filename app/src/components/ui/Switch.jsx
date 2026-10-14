@@ -18,6 +18,8 @@ export function Switch({
   busy = false,
   offIcon: OffIcon,
   onIcon: OnIcon,
+  offLabel,
+  onLabel,
   ariaLabel,
   tipLabel,
 }) {
@@ -45,20 +47,26 @@ export function Switch({
   );
   return (
     <span className="inline-flex items-center gap-2">
+      {/* offLabel/onLabel name each glyph on hover (title). The switch itself carries the
+          accessible name, so the glyphs stay aria-hidden. */}
       {OffIcon ? (
-        <OffIcon
-          size={13}
-          aria-hidden="true"
-          className={checked ? 'text-zinc-500 dark:text-zinc-400' : 'text-zinc-600 dark:text-zinc-300'}
-        />
+        <span title={offLabel} className="inline-flex">
+          <OffIcon
+            size={13}
+            aria-hidden="true"
+            className={checked ? 'text-zinc-500 dark:text-zinc-400' : 'text-zinc-600 dark:text-zinc-300'}
+          />
+        </span>
       ) : null}
       {tipLabel ? <Tip label={tipLabel}>{button}</Tip> : button}
       {OnIcon ? (
-        <OnIcon
-          size={13}
-          aria-hidden="true"
-          className={checked ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}
-        />
+        <span title={onLabel} className="inline-flex">
+          <OnIcon
+            size={13}
+            aria-hidden="true"
+            className={checked ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}
+          />
+        </span>
       ) : null}
     </span>
   );

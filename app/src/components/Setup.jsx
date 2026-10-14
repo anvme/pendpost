@@ -14,25 +14,31 @@
 // concurrency) and invalidates pendpost-health + config so the page reflects the
 // new state at once. Anti-slop: single-tone copy, font-bold max, tight tracking,
 // no all-caps prose - it mirrors Settings.jsx / Clients.jsx verbatim.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ChevronLeft, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck, Cloud, CalendarClock, Laptop, ShieldAlert, BellOff, Radar as RadarIcon } from 'lucide-react';
-import { usePendpostHealth, useConfig, saveConfig, recheckHealth, recheckAgent, connectAgent, adoptAgent, radarAgentScan, connectPlatform, connectStatus, useAccounts, useSignals, setMetaLane, disconnectPlatform, useDiscover, useGbpMedia, useGbpAttributes, gbpMediaAdd, gbpAttributesSet, mastodonUpdateProfile, nostrUpdateProfile, telegramUpdateProfile, youtubeUpdateProfile, useBoards, usePinterestBoardSections, createPinterestBoard, createPinterestBoardSection, useGhostMembers, useGhostNewsletters, ghostNewsletterUpdate } from '../lib/api.js';
-import { useCapabilities } from '../lib/cloud.js';
+import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ChevronLeft, ExternalLink, RefreshCw, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck, Cloud, CalendarClock, Laptop, ShieldAlert, BellOff, Radar as RadarIcon } from 'lucide-react';
+import { usePendpostHealth, usePlans, useConfig, saveConfig, recheckHealth, recheckAgent, connectAgent, adoptAgent, radarAgentScan, connectPlatform, connectStatus, useAccounts, useSignals, setMetaLane, disconnectPlatform, useDiscover, useGbpMedia, useGbpAttributes, gbpMediaAdd, gbpAttributesSet, mastodonUpdateProfile, nostrUpdateProfile, telegramUpdateProfile, youtubeUpdateProfile, useBoards, usePinterestBoardSections, createPinterestBoard, createPinterestBoardSection, useGhostMembers, useGhostNewsletters, ghostNewsletterUpdate } from '../lib/api.js';
+import { useCapabilities, useCloud, useCloudClients } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
-import { fmtFull, fmtInt, platformEnabled, isAbsoluteHttpUrl, GCP_APIS_CONSOLE_URL, WARMTH_MIN_AGE_DAYS, WARMTH_MIN_KARMA } from '../lib/format.js';
+import { fmtFull, fmtInt, platformEnabled, setupIdOf, isAbsoluteHttpUrl, GCP_APIS_CONSOLE_URL, WARMTH_MIN_AGE_DAYS, WARMTH_MIN_KARMA } from '../lib/format.js';
 import { AGENT_CONNECT, AGENT_CONNECT_JSON } from '../lib/agent-connect.js';
+import { failureKey, humanizeAction, humanizeCheck, humanizeConnect, humanizeFailure } from '../lib/failureCopy.js';
 import { INNER_SURFACE, FIELD_SURFACE, FIELD, Skeleton, EYEBROW, PLATFORM_META } from './ui.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { TAP_TARGET, BTN_DANGER_QUIET, STATUS_INK } from './ui/recipes.js';
 import { Select } from './ui/Select.jsx';
 import { Switch } from './ui/Switch.jsx';
 import Field from './ui/Field.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { usePrompt, useConfirm } from './ui/confirm.jsx';
 
-const BTN = 'rounded-xl px-3 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+const BTN = `${TAP_TARGET} rounded-xl px-3 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50`;
 const BTN_BRAND = `${BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`;
+// The look of an unavailable button that stays focusable (aria-disabled, the E3 pattern): the
+// same fade as disabled:opacity-50, plus the not-allowed cursor.
+const ARIA_DISABLED = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50';
 const BTN_GHOST = `${BTN} text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60`;
 // US-SET-20: recovery/create actions need VISIBLE chrome - a borderless ghost
 // button beside instruction text reads as more text, and the judge met three
@@ -177,7 +183,7 @@ const DISCOVER_LANES = ['x', 'youtube', 'discord', 'linkedin', 'wordpress', 'red
 // engine-delegating /api/connect (the server never persists them; the engine writes
 // the active client's .env). youtube/linkedin/x mint via a browser OAuth (interactive);
 // meta exchanges a System User token (no browser). Keys match the /api/connect body.
-const CONNECT_FIELDS = {
+export const CONNECT_FIELDS = {
   youtube: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.youtube' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
   linkedin: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.linkedin' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
   x: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.x' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
@@ -201,6 +207,16 @@ const CONNECT_FIELDS = {
   nostr: { interactive: false, fields: [{ key: 'privateKey', labelKey: 'connect.nostrPrivateKey', secret: true, preserveIfBlank: true }, { key: 'relays', labelKey: 'connect.nostrRelays', preserveIfBlank: true }, { key: 'nwcUri', labelKey: 'connect.nostrNwc', secret: true, optional: true }] },
   gbp: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.gbp' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
 };
+
+// A connect field's placeholder: its own placeholderKey, else `<labelKey>.placeholder`, but
+// only when that string exists. t() returns the key itself for a missing string, which once
+// put the raw id "connect.nostrNwc.placeholder" in the Nostr wallet field; no string means
+// no placeholder (the visible label already names the field).
+export function connectPlaceholder(field, t) {
+  const key = field.placeholderKey || `${field.labelKey}.placeholder`;
+  const text = t(key);
+  return text && text !== key ? text : undefined;
+}
 
 // buildSetupPrompt - assemble a self-contained Claude-for-Chrome browser-driving
 // prompt for ONE lane from the card's in-scope playbook (lib/playbooks.mjs, arriving
@@ -226,7 +242,7 @@ const CREDENTIAL_SAFETY = [
 // sentence for what to do when the card still does not flip.
 function revalidateCloser(label, platform, retry) {
   return [
-    `After that, re-check the connection: tell me to click "Validate" on the ${label} card in pendpost, or - if you have the pendpost MCP tools available - call health_recheck{platform:"${platform}"} yourself and read the result.`,
+    `After that, re-check the connection: tell me to click "Validate" on the ${label} card in pendpost, or (if you have the pendpost MCP tools available) call health_recheck{platform:"${platform}"} yourself and read the result.`,
     `Confirm the card flips to Connected and verified. ${retry}`,
   ];
 }
@@ -257,22 +273,22 @@ function buildSetupPrompt(label, playbook, platform) {
   if (scopes.length) L.push(`${n++}. Request these scopes/permissions: ${scopes.join(' ')}.`);
   if (steps.length) {
     L.push(`${n++}. Work through these portal steps in order:`);
-    steps.forEach((s, i) => L.push(`   ${i + 1}. ${s.title}${s.detail ? ` - ${s.detail}` : ''}`));
+    steps.forEach((s, i) => L.push(`   ${i + 1}. ${s.title}${s.detail ? `: ${s.detail}` : ''}`));
   }
   if (isStatic) {
     // No mint, no public client id to read separately: the owner copies the token/URL
     // and pastes it into the card. The agent must NOT read or capture the value.
-    L.push(`${n++}. When the screen shows the bot token / webhook URL, stop and hand control back to me so I copy it myself. Do not read, type, screenshot, or store the value - it is a secret.`);
+    L.push(`${n++}. When the screen shows the bot token / webhook URL, stop and hand control back to me so I copy it myself. Do not read, type, screenshot, or store the value: it is a secret.`);
     L.push(`${n++}. Tell me to paste what I copied into the ${label} card in pendpost Setup and press Connect.`);
-    L.push(`${n++}. ${revalidateCloser(label, platform, 'If it shows failed, the value is wrong or expired - I create a fresh one, re-paste, then we re-validate.').join(' ')}`);
+    L.push(`${n++}. ${revalidateCloser(label, platform, 'If it shows failed, the value is wrong or expired. I create a fresh one, re-paste, then we re-validate.').join(' ')}`);
     return L.join('\n');
   }
   L.push(`${n++}. When the portal shows a public App ID / Client ID (NOT a secret), tell me the value so I can paste it into the pendpost Setup page. Do not capture any secret.`);
   if (mint.length) {
-    L.push(`${n++}. In my pendpost project directory I will run this in my terminal (the OAuth callback runs on localhost and writes my local .env - you do not run it and never see the token):`);
+    L.push(`${n++}. In my pendpost project directory I will run this in my terminal (the OAuth callback runs on localhost and writes my local .env; you do not run it and never see the token):`);
     mint.forEach((cli) => L.push(`      ${cli}`));
   }
-  L.push(`${n++}. After I confirm the command finished, ${revalidateCloser(label, platform, 'If it shows failed, the token is invalid or expired - I re-run the command above, then we re-validate.').join(' ')}`);
+  L.push(`${n++}. After I confirm the command finished, ${revalidateCloser(label, platform, 'If it shows failed, the token is invalid or expired. I re-run the command above, then we re-validate.').join(' ')}`);
   return L.join('\n');
 }
 
@@ -290,12 +306,12 @@ const BROKEN_STATE = {
   failed: {
     reasonKey: 'setup.reason.failed',
     revalidate: true,
-    retry: 'If it still shows failed after that, the app itself is the problem, not the token - go back to the portal and check the app is still live and its permissions were not revoked.',
+    retry: 'If it still shows failed after that, the app itself is the problem, not the token. Go back to the portal and check the app is still live and its permissions were not revoked.',
     diagnose: ({ label, connectAction, playbook }) => {
       const L = [`The most likely cause is an expired or revoked ${label} credential. Work through this in order:`];
       L.push(`1. Re-mint the credential. In my pendpost project directory I will run this in my terminal (you do not run it and never see the token):`);
       L.push(`      ${connectAction}`);
-      L.push('2. If that command itself errors, read its output to me and help me interpret it - do not retry blindly.');
+      L.push('2. If that command itself errors, read its output to me and help me interpret it. Do not retry blindly.');
       if (playbook?.portalUrl) {
         L.push(`3. If re-minting succeeds but the connection still fails, open ${playbook.portalUrl} and check: is the app still active, was it put into development mode, were its permissions revoked, did the account lose access to the asset?`);
         if (playbook.scopes?.length) {
@@ -305,13 +321,13 @@ const BROKEN_STATE = {
       return L;
     },
   },
-  // Creds present but no probe result yet. Reason line ONLY, deliberately no prompt:
-  // nothing is known to be broken, so there is no platform report to hand an agent and
-  // a "fix" prompt would overclaim (data honesty). Validate leads instead - which is
-  // why this entry carries no diagnose and buildFixPrompt returns null for it.
-  unproven: {
-    reasonKey: 'setup.reason.unproven',
-  },
+  // Creds present but no probe result yet. No reason line and deliberately no prompt:
+  // the "Not verified" chip already says it (don't repeat yourself), and its tooltip
+  // carries the rest (setup.reason.unproven, see StatusChip). Nothing is known to be
+  // broken, so there is no platform report to hand an agent and a "fix" prompt would
+  // overclaim (data honesty). Validate leads instead - which is why this entry carries
+  // no reasonKey, no diagnose, and buildFixPrompt returns null for it.
+  unproven: {},
   // A vendor-side restriction. Re-minting cannot help, and pendpost keeps the block
   // recorded until it is explicitly confirmed lifted (lib/state.mjs never auto-expires
   // it on a guessed timestamp), so the honest instruction is "wait, then clear it".
@@ -323,7 +339,7 @@ const BROKEN_STATE = {
     // here would be instructing it to press a button that cannot do anything.
     revalidate: false,
     diagnose: ({ label }) => ([
-      `This is NOT a credential problem, so do not re-mint anything and do not disconnect the account - that would destroy a working credential without touching the block.`,
+      `This is NOT a credential problem, so do not re-mint anything and do not disconnect the account: that would destroy a working credential without touching the block.`,
       `${label} has restricted this account's automated actions. pendpost has paused publishing on this lane and keeps the block recorded until it is confirmed lifted; it deliberately never expires on a guessed timestamp.`,
       '1. Help me find the restriction notice in the platform\'s own account or business settings and read what it says.',
       '2. Tell me what it asks for (a wait, an appeal, a verification step) and what the stated end date is, if any.',
@@ -341,8 +357,7 @@ const BROKEN_STATE = {
 // agent instruction, not UI copy. Returns null for a state that is not broken.
 function buildFixPrompt({ label, platform, validation, connectAction, playbook }) {
   const def = BROKEN_STATE[validation?.state];
-  // No diagnose steps -> this state has a reason line but nothing to hand an agent
-  // (unproven). Returning null here makes the BUILDER the single source of that rule,
+  // No diagnose steps -> this state has nothing to hand an agent (unproven). Returning null here makes the BUILDER the single source of that rule,
   // so the card never has to special-case a state name to decide on the hero.
   if (!def?.diagnose) return null;
   const L = [];
@@ -410,12 +425,16 @@ function statusTone(status, validation) {
   return 'warn';
 }
 
-const dotClass = (tone) => ({ ok: 'bg-emerald-500', warn: 'bg-amber-500', err: 'bg-red-500', neutral: 'bg-zinc-400' }[tone] || 'bg-zinc-400');
+// An all-clear lane (live) carries NO dot: colour is spent only on attention (canon Tier 2),
+// and a grey dot on every healthy row would be noise. The rail row's name says the status.
+const dotClass = (tone) => ({ warn: 'bg-amber-500', err: 'bg-red-500', neutral: 'bg-zinc-400' }[tone] || null);
 
 // The lane's status as READABLE text (same mapping StatusChip renders), lifted so the
 // collapsed trigger can fold it into its accessible name - the dot is decorative, so
 // status must not be color-only on a collapsed row (DESIGN.md; WCAG 1.4.1).
-function statusText(status, validation, t) {
+function statusText(status, validation, t, cloudRefusal = null, localRefusal = null) {
+  if (cloudRefusal) return t(cloudRefusalKey(cloudRefusal));
+  if (localRefusal) return t(localRefusalKey(localRefusal));
   if (status === 'connected') {
     const state = validation?.state;
     if (state === 'live') return t('setup.status.connected');
@@ -428,6 +447,57 @@ function statusText(status, validation, t) {
   }
   if (status === 'skipped') return t('setup.status.skipped');
   return t('setup.status.incomplete');
+}
+
+// A cloud credential refusal for this lane in this project (sync.issues[] kind
+// 'credential', from GET /api/cloud). When the cloud refused the lane's account, the chip
+// says THAT ("Cloud: no account connected") instead of a generic "Incomplete" or even a
+// green "Connected": the owner who lands here from the cloud popover's "Reconnect" sees
+// why they are here. A relabel of the existing chip, never a second one.
+function cloudRefusalKey(code) {
+  return code === 'account_mismatch' ? 'setup.status.cloudMismatch' : 'setup.status.cloudUnresolved';
+}
+
+// The same relabel for a LOCAL publish that failed on the lane's own credential: the
+// newest failed post whose lastFailure.recovery is 'reconnect' (lib/publish-hold.mjs), read
+// from the plans the app already polls. The post detail's "Neu verbinden" lands here, so
+// the chip names why in a few words ("Permission missing"); the full failure sentence
+// rides its tooltip. A live check newer than the failure means the reconnect already
+// happened, so the plain status returns.
+const LOCAL_REFUSAL_KEYS = {
+  'failure.scope': 'setup.status.reconnect.scope',
+  'failure.expired': 'setup.status.reconnect.expired',
+  'failure.notConfigured': 'setup.status.reconnect.notConfigured',
+};
+// The failure copy keys whose recovery is a reconnect (their sentence says so).
+const RECONNECT_KEYS = new Set(['failure.expired', 'failure.scope', 'failure.keyInvalid', 'failure.relaysDown']);
+// D5: the lanes whose credential is a static key the owner pastes (no browser consent). Their
+// "Neu verbinden" replaces the key IN PLACE: the connected card opens the ConnectPanel, secrets
+// blank, and nothing is removed first (a blank nostr nsec/relays is kept server-side,
+// lib/api.mjs preserveIfBlank; the other lanes need the new key typed, which is the point).
+// OAuth lanes must disconnect to re-consent, so they keep the disconnect ceremony + confirm.
+const IN_PLACE_RECONNECT_LANES = new Set(['nostr', 'telegram', 'discord', 'mastodon', 'wordpress', 'ghost']);
+function localRefusalKey(failure) {
+  return LOCAL_REFUSAL_KEYS[failureKey({ message: failure.message, code: failure.code })] || 'setup.status.reconnect.generic';
+}
+function localRefusalsByLane(plans) {
+  const out = {};
+  for (const c of plans?.campaigns || []) {
+    for (const post of c.posts || []) {
+      const f = post.lastFailure;
+      if (post.derivedState !== 'publish-failed' || f?.recovery !== 'reconnect' || !f.lane) continue;
+      const id = setupIdOf(f.lane);
+      if (!out[id] || (Date.parse(f.at) || 0) > (Date.parse(out[id].at) || 0)) out[id] = f;
+    }
+  }
+  return out;
+}
+function openLocalRefusal(refusals, lane) {
+  const f = refusals[lane.platform];
+  if (!f) return null;
+  const v = lane.validation;
+  if (v?.state === 'live' && (Date.parse(v.checkedAt) || 0) > (Date.parse(f.at) || 0)) return null;
+  return f;
 }
 
 // The brand glyph(s) each setup lane shows in its collapsed row (keyed to PLATFORM_META).
@@ -447,7 +517,7 @@ function PlatformGlyphs({ platformId, tone }) {
         const { Icon } = meta;
         return <Icon key={k} size={16} className={meta.color} aria-hidden="true" />;
       })}
-      <span className={`absolute -right-1 -top-1 h-2 w-2 rounded-full ring-2 ring-white dark:ring-zinc-900 ${dotClass(tone)}`} aria-hidden="true" />
+      {dotClass(tone) ? <span className={`absolute -right-1 -top-1 h-2 w-2 rounded-full ring-2 ring-white dark:ring-zinc-900 ${dotClass(tone)}`} aria-hidden="true" /> : null}
     </span>
   );
 }
@@ -462,18 +532,37 @@ function PlatformGlyphs({ platformId, tone }) {
 //   connected + unproven -> warn  / AlertCircle  'Not verified'  (no probe yet / blocked)
 //   skipped              -> neutral/ MinusCircle  'Skipped'
 //   incomplete           -> warn  / AlertCircle  'Incomplete'
-function StatusChip({ status, validation, t }) {
-  const detail = validation?.detail || null;
+// The chip's tooltip (also its accessible DESCRIPTION; its NAME is the status word, judge
+// final2): the probe's raw message in the UI language when it maps to a known sentence ("not
+// configured (REDDIT_CLIENT_ID ...)" -> "Reddit ist in diesem Projekt noch nicht
+// eingerichtet."), else the raw text. Raw text is never the name and never inline.
+function chipTip(raw, laneId, t) {
+  if (!raw) return null;
+  return humanizeCheck({ message: raw, lane: laneId }, t).text || raw;
+}
+
+// `inlineSentence`: the plain sentence the card already prints under the chip (a connected lane
+// that is broken), or null. A tooltip that would only repeat it is dropped, so the chip is just
+// its word and the sentence below explains (don't repeat yourself); a raw message that maps to
+// nothing known stays the tooltip, as the one technical detail.
+function StatusChip({ status, validation, t, cloudRefusal = null, localRefusal = null, laneName = '', laneId = '', inlineSentence = null }) {
+  const detail = chipTip(validation?.detail, laneId, t);
+  const brokenTip = detail && detail === inlineSentence ? null : detail;
   const tone = statusTone(status, validation);
+  if (cloudRefusal) return <IconBadge icon={AlertCircle} tone="err" text={t(cloudRefusalKey(cloudRefusal))} label={t(`connection.issue.msg.${cloudRefusal}`, { lane: laneName || t('failure.platform') })} />;
+  if (localRefusal) {
+    const sentence = humanizeFailure(localRefusal, t).text;
+    return <IconBadge icon={AlertCircle} tone="err" text={t(localRefusalKey(localRefusal))} label={sentence === inlineSentence ? null : sentence} />;
+  }
   if (status === 'connected') {
     const state = validation?.state;
     if (state === 'live') return <IconBadge icon={CheckCircle2} tone={tone} text={t('setup.status.connected')} label={detail} />;
-    if (state === 'failed') return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.failed')} label={detail} />;
-    if (state === 'blocked') return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.blocked')} label={detail} />;
-    return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.notVerified')} label={detail} />;
+    if (state === 'failed') return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.failed')} label={brokenTip} />;
+    if (state === 'blocked') return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.blocked')} label={brokenTip} />;
+    return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.notVerified')} label={detail || t('setup.reason.unproven')} />;
   }
   if (status === 'skipped') return <IconBadge icon={MinusCircle} tone={tone} text={t('setup.status.skipped')} label={detail} />;
-  return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.incomplete')} label={detail} />;
+  return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.incomplete')} label={brokenTip} />;
 }
 
 // The terminal alternative to the GUI Connect panel: the exact CLI command + a Copy
@@ -481,15 +570,18 @@ function StatusChip({ status, validation, t }) {
 // "prefer your terminal?" disclosure (TerminalAlternative). Mirrors Sidebar's
 // TokenAction copy machine, with a clipboard fallback to a read-only prompt when
 // navigator.clipboard is unavailable (test / insecure ctx).
-function SecretRow({ label, action }) {
+// It names no credential itself: the server's `missing[].label` is English agent prose
+// ("a site URL + Admin API key", kept for the MCP face), and the Connect panel right above
+// already lists each value in the owner's language. The command prompts for them in turn.
+function SecretRow({ action }) {
   const t = useT();
   const { copied, copy: copyText } = useCopy();
   const copy = () => copyText(action, { title: t('setup.secret.copyTitle'), body: t('setup.secret.runHint') });
   return (
     <div className={`space-y-1.5 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-      <p className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-        <Terminal size={12} aria-hidden="true" />
-        {t('setup.secret.needs', { secret: label })}
+      <p className="flex items-start gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <Terminal size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+        {t('setup.secret.runHint')}
       </p>
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 truncate rounded-lg bg-zinc-900/5 px-2 py-1.5 font-mono text-[11px] text-zinc-700 dark:bg-white/10 dark:text-zinc-200">
@@ -499,12 +591,11 @@ function SecretRow({ label, action }) {
           type="button"
           onClick={copy}
           aria-label={t('setup.secret.copy')}
-          className="shrink-0 rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+          className={`${TAP_TARGET} shrink-0 rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60`}
         >
           {copied ? <Check size={14} className="text-emerald-600 dark:text-emerald-300" aria-hidden="true" /> : <ClipboardCopy size={14} aria-hidden="true" />}
         </button>
       </div>
-      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.secret.runHint')}</p>
     </div>
   );
 }
@@ -535,12 +626,25 @@ function ConnectRow({ label, hint, value }) {
           type="button"
           onClick={copy}
           aria-label={t('setup.agent.copy', { what: label })}
-          className="shrink-0 rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+          className={`${TAP_TARGET} shrink-0 rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60`}
         >
           {copied ? <Check size={14} className="text-emerald-600 dark:text-emerald-300" aria-hidden="true" /> : <ClipboardCopy size={14} aria-hidden="true" />}
         </button>
       </div>
       <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{hint}</p>
+    </div>
+  );
+}
+
+// A failed action's alert, the one anatomy every Setup error line shares: the plain sentence
+// ({ text, raw } from humanizeAction / humanizeConnect) is the alert, and the raw engine or
+// HTTP line rides the house "?" beside it, never inline and never inside the alert.
+function ActionError({ error, className = '' }) {
+  if (!error) return null;
+  return (
+    <div className={`flex items-start gap-1 ${className}`}>
+      <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
     </div>
   );
 }
@@ -567,7 +671,7 @@ function AgentTokenPanel({ provider, onStored }) {
       try { await recheckAgent(); } catch { /* the stored validation row carries the reason */ }
       await onStored();
     } catch (err) {
-      setError(err.message || t('setup.agent.token.failed'));
+      setError(humanizeAction(err, t, { fallbackKey: 'setup.agent.token.failed' }));
     } finally {
       setBusy(false);
     }
@@ -596,7 +700,7 @@ function AgentTokenPanel({ provider, onStored }) {
         <Lock size={11} aria-hidden="true" />
         {t('setup.agent.token.localNote')}
       </p>
-      {error ? <p role="alert" className="text-[11px] text-rose-600 dark:text-rose-400">{error}</p> : null}
+      <ActionError error={error} />
     </form>
   );
 }
@@ -620,7 +724,7 @@ function AgentAdoptRow({ candidates, primary = false, onDone }) {
       try { await recheckAgent(); } catch { /* the stored validation row carries the reason */ }
       await onDone();
     } catch (err) {
-      setError(err.message || t('setup.agent.adopt.failed'));
+      setError(humanizeAction(err, t, { fallbackKey: 'setup.agent.adopt.failed' }));
     } finally {
       setBusy(null);
     }
@@ -638,7 +742,7 @@ function AgentAdoptRow({ candidates, primary = false, onDone }) {
           </button>
         </Tip>
       ))}
-      {error ? <p role="alert" className="text-[11px] text-rose-600 dark:text-rose-400">{error}</p> : null}
+      <ActionError error={error} />
     </div>
   );
 }
@@ -715,9 +819,10 @@ function AgentDetail({ agent, onNavigate = () => {} }) {
             <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('setup.agent.why')}</p>
           ) : null}
 
+          {/* One plain sentence; the CLI's raw text rides the AgentStatusChip tooltip only. */}
           {state === 'failed' && validation?.detail ? (
             <p role="alert" className="rounded-xl bg-rose-500/10 px-3 py-2 text-[11px] leading-relaxed text-rose-700 ring-1 ring-rose-500/20 dark:text-rose-300">
-              {validation.detail}
+              {t('setup.agent.failedNote')}
             </p>
           ) : null}
 
@@ -771,6 +876,7 @@ function AgentDetail({ agent, onNavigate = () => {} }) {
             {state === 'live' ? (
               <Tip label={t('radar.scan.tip')}>
                 <ActionButton
+                  className={TAP_TARGET}
                   icon={RadarIcon}
                   labels={{ idle: t('radar.scanNow'), loading: t('radar.scanning'), success: t('radar.scanNow'), error: t('setup.agent.scanFailed') }}
                   onAction={async () => {
@@ -829,28 +935,41 @@ function AgentStatusChip({ state, detail, t }) {
 // a "Check again" + a "Cancel" out, and flips to an actionable error on a hard failure or
 // a soft 180s cap. On 'error' a Retry re-runs connect(); the terminal path stays below
 // via TerminalAlternative ("prefer your terminal?").
-function ConnectPanel({ platform, fields, interactive }) {
+// `autoFocus`: focus the first field on mount, for a panel revealed by a click (the in-place
+// reconnect), so focus lands in the form that replaced the button instead of on the page.
+function ConnectPanel({ platform, fields, interactive, submitLabel = null, autoFocus = false }) {
   const t = useT();
   const queryClient = useQueryClient();
   const [values, setValues] = useState({});
   const [state, setState] = useState('idle'); // idle | connecting | waiting | error
+  // { text, raw }: the plain sentence (humanizeConnect) and the engine's own line for the "?".
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(null); // latest /api/connect/status payload
+  const fail = (message) => setError(humanizeConnect({ message, lane: platform, fields: fields.map((f) => ({ key: f.key, label: t(f.labelKey) })) }, t));
   const set = (k, v) => setValues((p) => ({ ...p, [k]: v }));
   // Spec 20: an `optional` field (e.g. nostr's NWC wallet URI) never blocks connect. A
   // `preserveIfBlank` field (nostr's nsec/relays) also never blocks - left blank on an
   // update the server keeps the persisted value, so the operator can add the wallet URI
   // without re-entering the nsec. The button enables once ANY field is filled (so an
   // all-blank submit can't fire); a missing required field fails closed server-side.
-  const requiredFilled = fields.filter((f) => !f.optional && !f.preserveIfBlank).every((f) => (values[f.key] || '').trim());
-  const ready = requiredFilled && fields.some((f) => (values[f.key] || '').trim());
+  const blank = (f) => !(values[f.key] || '').trim();
+  const requiredFilled = fields.filter((f) => !f.optional && !f.preserveIfBlank).every((f) => !blank(f));
+  const anyFilled = fields.some((f) => !blank(f));
+  const ready = requiredFilled && anyFilled;
+  // D9 (the E3 pattern): an unavailable submit says why, in a line directly above it that is
+  // also its description. The missing labels are the blank required fields; with nothing typed
+  // yet (nostr, whose fields are all keep-if-blank) every non-optional field is named.
+  const missingLabels = ready ? [] : fields
+    .filter((f) => !f.optional && blank(f) && (!f.preserveIfBlank || !anyFilled))
+    .map((f) => t(f.labelKey));
+  const missingId = useId();
 
   // Apply one connect-status payload: record it, and if the ceremony has FAILED, flip to a
   // terminal error (the detail rides the alert). Shared by the immediate post-connect fetch
   // and every poll tick so a failure surfaces at once, never only after a timer.
   const applyStatus = (next) => {
     setStatus(next);
-    if (next?.state === 'failed') { setState('error'); setError(next.detail || t('connect.failed')); }
+    if (next?.state === 'failed') { setState('error'); fail(next.detail); }
   };
 
   // One poll tick: re-run the liveness probe (the parent unmounts us when the lane flips
@@ -877,7 +996,7 @@ function ConnectPanel({ platform, fields, interactive }) {
       if (!alive) return;
       await pollOnce();
       if (!alive) return;
-      if (Date.now() - started > limit) { setState('error'); setError(t('connect.timeout')); }
+      if (Date.now() - started > limit) { setState('error'); setError({ text: t('connect.timeout'), raw: null }); }
     }, 3000);
     return () => { alive = false; clearInterval(iv); };
     // pollOnce closes over stable setters/queryClient/t; re-running per state/platform is enough.
@@ -897,7 +1016,7 @@ function ConnectPanel({ platform, fields, interactive }) {
       connectStatus(platform).then(applyStatus).catch(() => {});
     } catch (err) {
       setState('error');
-      setError(err.message || t('connect.failed'));
+      fail(err.message);
     }
   };
 
@@ -909,17 +1028,18 @@ function ConnectPanel({ platform, fields, interactive }) {
   const busy = state === 'connecting' || state === 'waiting';
   return (
     <div className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`} aria-busy={busy}>
-      {fields.map((f) => (
+      {fields.map((f, i) => (
         <Field
           key={f.key}
           id={`setup-connect-${platform}-${f.key}`}
+          autoFocus={autoFocus && i === 0}
           label={t(f.labelKey)}
           secret={f.secret}
           autoComplete="off"
           spellCheck={false}
           value={values[f.key] || ''}
           onChange={(e) => set(f.key, e.target.value)}
-          placeholder={f.placeholderKey ? t(f.placeholderKey) : t(`${f.labelKey}.placeholder`)}
+          placeholder={connectPlaceholder(f, t)}
           disabled={busy}
         />
       ))}
@@ -948,7 +1068,7 @@ function ConnectPanel({ platform, fields, interactive }) {
                 href={status.authUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] font-bold underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:decoration-zinc-500 dark:hover:decoration-zinc-300"
+                className={`${TAP_TARGET} inline-flex items-center gap-1 text-[11px] font-bold underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:decoration-zinc-500 dark:hover:decoration-zinc-300`}
               >
                 <ExternalLink size={12} aria-hidden="true" />
                 {t('connect.openSignIn')}
@@ -966,21 +1086,36 @@ function ConnectPanel({ platform, fields, interactive }) {
         </div>
       ) : state === 'error' ? (
         <div className="space-y-2">
-          <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p>
+          {/* The plain sentence is the alert; the engine's English line rides the "?" beside it. */}
+          <ActionError error={error} />
           <button type="button" onClick={connect} disabled={!ready} className={BTN_BRAND}>{t('connect.retry')}</button>
         </div>
       ) : (
-        <div className="flex items-center justify-end gap-2">
-          <button type="button" onClick={connect} disabled={busy || !ready} aria-busy={busy} className={`${BTN_BRAND} min-h-11`}>
-            {state === 'connecting' ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
-            {state === 'connecting' ? t('connect.connecting') : t('connect.button')}
-          </button>
+        <div className="space-y-1.5">
+          {/* aria-disabled, not disabled: the button stays focusable so its reason is heard. */}
+          {!ready && missingLabels.length ? (
+            <p id={missingId} className="text-right text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.connect.missing', { fields: missingLabels.join(', ') })}</p>
+          ) : null}
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { if (ready) connect(); }}
+              disabled={busy}
+              aria-disabled={!ready ? 'true' : undefined}
+              aria-describedby={!ready && missingLabels.length ? missingId : undefined}
+              aria-busy={busy}
+              className={`${BTN_BRAND} ${ARIA_DISABLED} min-h-11`}
+            >
+              {state === 'connecting' ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
+              {state === 'connecting' ? t('connect.connecting') : submitLabel || t('connect.button')}
+            </button>
+          </div>
         </div>
       )}
 
       {/* Announce the state transition for assistive tech (the visible copy carries the detail). */}
       <span className="sr-only" role="status" aria-live="polite">
-        {state === 'waiting' ? t('connect.waiting') : state === 'error' ? (error || t('connect.failed')) : ''}
+        {state === 'waiting' ? t('connect.waiting') : state === 'error' ? (error?.text || t('connect.failed')) : ''}
       </span>
     </div>
   );
@@ -995,13 +1130,13 @@ function TerminalAlternative({ secrets }) {
   if (!secrets.length) return null;
   return (
     <div className={`rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className={`${TAP_TARGET} flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50`}>
         <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
         {t('connect.terminalAlt')}
       </button>
       {open ? (
         <div className="mt-2 space-y-2">
-          {secrets.map((item, i) => <SecretRow key={`secret-${i}`} label={item.label} action={item.action} />)}
+          {secrets.map((item, i) => <SecretRow key={`secret-${i}`} action={item.action} />)}
         </div>
       ) : null}
     </div>
@@ -1046,7 +1181,7 @@ function IdentifierRow({ field, savedValue, configRev, hint, dimmed }) {
       setTimeout(() => setState('idle'), 1500);
     } catch (err) {
       setState('error');
-      setError(err.message || t('setup.identifier.saveError'));
+      setError(humanizeAction(err, t, { fallbackKey: 'setup.identifier.saveError' }));
     }
   };
 
@@ -1074,7 +1209,8 @@ function IdentifierRow({ field, savedValue, configRev, hint, dimmed }) {
         onKeyDown={onKeyDown}
         placeholder={t(`setup.${field.placeholderKey}`)}
         hint={hint}
-        error={state === 'error' ? error : null}
+        // Field owns the alert line, so the "?" with the raw server line sits inside it.
+        error={state === 'error' && error ? <InfoTip label={error.raw}>{error.text}</InfoTip> : null}
         // A fragment (always truthy) keeps pr-9 reserved so the layout never jumps
         // when the save glyph appears - only the glyph itself changes, not the box.
         adornment={(
@@ -1211,7 +1347,7 @@ export function DiscoveryBlock({ platformId, configRev, hideAssetPicker = false 
     return (
       <p className="flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
         <AlertCircle size={12} aria-hidden="true" />
-        <span>{t('setup.discover.error')} &mdash; {t('setup.discover.reconnect')}</span>
+        <span>{t('setup.discover.error')}: {t('setup.discover.reconnect')}</span>
       </p>
     );
   }
@@ -1241,7 +1377,7 @@ export function DiscoveryBlock({ platformId, configRev, hideAssetPicker = false 
   };
 
   const CurrentBadge = () => (
-    <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
+    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold ${STATUS_INK.ok}`}>
       <Check size={11} aria-hidden="true" />{t('setup.discover.current')}
     </span>
   );
@@ -1314,7 +1450,7 @@ function HowToConnect({ playbook, inline = false }) {
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50"
+          className={`${TAP_TARGET} flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50`}
         >
           <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
           {t('setup.howToConnect')}
@@ -1328,7 +1464,7 @@ function HowToConnect({ playbook, inline = false }) {
                 href={portalUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 font-bold underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:decoration-zinc-500 dark:hover:decoration-zinc-300"
+                className={`${TAP_TARGET} inline-flex items-center gap-1 font-bold underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:decoration-zinc-500 dark:hover:decoration-zinc-300`}
               >
                 <ExternalLink size={12} aria-hidden="true" />
                 {portalUrl}
@@ -1349,7 +1485,7 @@ function HowToConnect({ playbook, inline = false }) {
               {steps.map((s, i) => (
                 <li key={i}>
                   <span className="font-bold">{s.title}</span>
-                  {s.detail ? <span className="text-zinc-500 dark:text-zinc-400"> - {s.detail}</span> : null}
+                  {s.detail ? <span className="text-zinc-500 dark:text-zinc-400">: {s.detail}</span> : null}
                 </li>
               ))}
             </ol>
@@ -1394,26 +1530,32 @@ function ValidateButton({ platform }) {
   );
 }
 
-// Disconnect ONE connected lane: a quiet single-tone action (NOT a red danger zone)
-// beside Validate. Click -> a useConfirm gate ("clear all credentials for <label>?")
+// Disconnect ONE connected lane: the quiet destructive recipe (recipes.js
+// BTN_DANGER_QUIET: smaller and muted, red only on hover/focus, pushed to the row end)
+// so it never sits at Validate's weight, and NOT a red danger zone. Click -> a useConfirm gate ("clear all credentials for <label>?")
 // -> disconnectPlatform(id) -> invalidate the derived queries so the card flips to
 // incomplete. A failure surfaces inline (role=alert); no secret is ever shown. States
 // mirror ConnectPanel: idle | working | error.
 // `buttonLabel` optionally renames the trigger (BoardSections' "Reconnect Pinterest"
 // reuses this exact machinery - confirm gate, disconnect, invalidations - so the
 // reconnect notice is never a dead end while the card grows no second code path).
-function DisconnectButton({ platform, label, buttonLabel }) {
+// `reconnect`: the button offers a reconnect (the lane recovery, the Pinterest scope
+// notices). The ceremony underneath is the same disconnect, after which the card shows
+// the connect panel, but the confirm asks what the owner clicked ("LinkedIn neu
+// verbinden?"), never "LinkedIn trennen?". The plain "Trennen" keeps its own copy.
+function DisconnectButton({ platform, label, buttonLabel, primary = false, reconnect = false }) {
   const t = useT();
   const confirm = useConfirm();
   const queryClient = useQueryClient();
   const [state, setState] = useState('idle'); // idle | working | error
   const [error, setError] = useState(null);
   const run = async () => {
+    const ns = reconnect ? 'setup.reconnect' : 'setup.disconnect';
     const okGo = await confirm({
-      title: t('setup.disconnect.confirmTitle', { label }),
-      body: t('setup.disconnect.confirmBody', { label }),
-      confirmLabel: t('setup.disconnect.confirmLabel'),
-      danger: true,
+      title: t(`${ns}.confirmTitle`, { label }),
+      body: t(`${ns}.confirmBody`, { label }),
+      confirmLabel: t(`${ns}.confirmLabel`),
+      danger: !reconnect,
     });
     if (!okGo) return;
     setState('working');
@@ -1426,16 +1568,16 @@ function DisconnectButton({ platform, label, buttonLabel }) {
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
     } catch (err) {
       setState('error');
-      setError(err.message || t('setup.disconnect.error'));
+      setError(humanizeAction(err, t, { fallbackKey: 'setup.disconnect.error' }));
     }
   };
   return (
     <>
-      <button type="button" onClick={run} disabled={state === 'working'} aria-busy={state === 'working'} className={buttonLabel ? BTN_OUTLINE : BTN_GHOST}>
+      <button type="button" onClick={run} disabled={state === 'working'} aria-busy={state === 'working'} className={primary ? BTN_BRAND : buttonLabel ? BTN_OUTLINE : `${BTN_DANGER_QUIET} ml-auto`}>
         {state === 'working' ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
         {buttonLabel || t('setup.disconnect.button')}
       </button>
-      {error ? <p role="alert" className="w-full text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} className="w-full" />
     </>
   );
 }
@@ -1451,7 +1593,8 @@ function DisconnectButton({ platform, label, buttonLabel }) {
 // mechanics only (useCopy, the tip, the Bot/Check swap); every string arrives as a
 // prop under an `ns` locale namespace, so the two callers read as one component
 // rather than two near-identical ones. `text` null -> renders nothing.
-function PromptHero({ label, text, ns }) {
+// `quiet`: a secondary path beside a primary action (the reconnect), so one brand button per card.
+function PromptHero({ label, text, ns, quiet = false }) {
   const t = useT();
   const { copied, copy } = useCopy();
   if (!text) return null;
@@ -1463,7 +1606,7 @@ function PromptHero({ label, text, ns }) {
           type="button"
           onClick={() => copy(text, { title: t(`${ns}.copyTitle`), body: t(`${ns}.fallbackHint`), wide: true })}
           aria-label={t(`${ns}.copy`, { label })}
-          className={BTN_BRAND}
+          className={quiet ? BTN_OUTLINE : BTN_BRAND}
         >
           {copied ? <Check size={14} className="mr-1 inline" aria-hidden="true" /> : <Bot size={14} className="mr-1 inline" aria-hidden="true" />}
           {copied ? t(`${ns}.copied`) : t(`${ns}.label`)}
@@ -1487,13 +1630,38 @@ function ManualSetup({ defaultOpen = false, children }) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50"
+        className={`${TAP_TARGET} flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50`}
       >
         <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
         {t('setup.manual')}
       </button>
       {open ? <div className="mt-2 space-y-2.5">{children}</div> : null}
     </div>
+  );
+}
+
+// A quiet note in plain words whose machine vocabulary (an .env variable, a protocol
+// name, a kind number) rides behind the house "?" trigger only (ui/InfoTip.jsx: hover,
+// keyboard and tap, 44px hit area). Never inline in the sentence.
+const META_PAUSE_ENV = 'META_PUBLISHING_PAUSED';
+// The scheduler's own cadence default (lib/scheduler.mjs META_CADENCE_DEFAULT: Instagram's
+// 100 posts per rolling 24h, no minimum gap). Only the last fallback for the Meta cadence
+// fields; account_status's usage.limit is preferred because the server derives it live.
+const META_CADENCE_FALLBACK = { maxPer24h: 100, minGapMinutes: 0 };
+// The server's cadence floor refusals (lib/writes.mjs setMetaLane) name the field they
+// reject. Each maps to a sentence that says the rule in plain words, so the owner knows
+// what to type; the raw server line keeps riding the "?". Any other refusal stays generic.
+const META_CADENCE_RULES = [
+  [/maxPer24h must be an integer/, 'settings.lane.saveCadence.maxRule'],
+  [/minGapMinutes must be an integer/, 'settings.lane.saveCadence.gapRule'],
+];
+const NOSTR_MEDIA_ENV = 'NOSTR_MEDIA_SERVER';
+const NOSTR_NWC_ENV = 'NOSTR_NWC_URI';
+function NoteTip({ tip, id, side = 'top', children }) {
+  return (
+    <p id={id} className="text-[11px] text-zinc-500 dark:text-zinc-400">
+      <InfoTip label={tip} side={side}>{children}</InfoTip>
+    </p>
   );
 }
 
@@ -1512,17 +1680,53 @@ function MetaLaneControls() {
   const lastRun = accounts?.scheduler?.lastRun || null;
   const lanePaused = Boolean(meta?.paused);
   const pausedByEnv = Boolean(meta?.pausedByEnv);
+  const envNoteId = useId();
   const usage = meta?.usage || null;
   const usageWarn = Boolean(usage?.limit) && usage.used / usage.limit >= 0.8;
-  const [cadence, setCadence] = useState({ maxPer24h: '', minGapMinutes: '' });
+  // The cadence fields are never empty: with nothing stored they show the EFFECTIVE values
+  // the scheduler applies. The cap comes from usage.limit (the server reads it through the
+  // same cadence loader the scheduler uses); the scheduler default (100 / 0, lib/scheduler.mjs
+  // META_CADENCE_DEFAULT) is only the last fallback when neither is reported.
+  const savedMax = meta?.cadence?.maxPer24h ?? usage?.limit ?? META_CADENCE_FALLBACK.maxPer24h;
+  const savedGap = meta?.cadence?.minGapMinutes ?? META_CADENCE_FALLBACK.minGapMinutes;
+  const saved = useMemo(() => ({ maxPer24h: String(savedMax), minGapMinutes: String(savedGap) }), [savedMax, savedGap]);
+  const [cadence, setCadence] = useState(saved);
+  const [cadenceState, setCadenceState] = useState('idle'); // idle | saving | saved | error
   const [cadenceErr, setCadenceErr] = useState(null);
-  useEffect(() => {
-    const c = accounts?.meta?.cadence;
-    setCadence({
-      maxPer24h: c?.maxPer24h != null ? String(c.maxPer24h) : '',
-      minGapMinutes: c?.minGapMinutes != null ? String(c.minGapMinutes) : '',
-    });
-  }, [accounts?.meta?.cadence?.maxPer24h, accounts?.meta?.cadence?.minGapMinutes]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Re-seed when the stored value moves underneath us (a save invalidates accounts, or an
+  // agent writes the lane), so the dirty check resets to truth.
+  useEffect(() => { setCadence(saved); }, [saved]);
+
+  // Auto-save, the card's one paradigm (IdentifierRow): a CHANGED, non-empty cadence commits
+  // on blur or Enter, Escape reverts, and a cleared field restores the saved value. Feedback
+  // is glyph-only beside the fields plus an sr-only announcement; the server validates the
+  // floor (maxPer24h >= 1, minGapMinutes >= 0) and its refusal shows in the alert below.
+  const cadenceDirty = cadence.maxPer24h.trim() !== '' && cadence.minGapMinutes.trim() !== ''
+    && (cadence.maxPer24h.trim() !== saved.maxPer24h || cadence.minGapMinutes.trim() !== saved.minGapMinutes);
+  const saveCadence = async () => {
+    if (!cadenceDirty) return;
+    setCadenceState('saving');
+    setCadenceErr(null);
+    try {
+      await setMetaLane({ cadence: { maxPer24h: Number(cadence.maxPer24h), minGapMinutes: Number(cadence.minGapMinutes) } });
+      setCadenceState('saved');
+      invalidateAccounts();
+      setTimeout(() => setCadenceState('idle'), 1500);
+    } catch (err) {
+      setCadenceState('error');
+      const rule = META_CADENCE_RULES.find(([re]) => re.test(err?.message || ''));
+      setCadenceErr(humanizeAction(err, t, { fallbackKey: rule ? rule[1] : 'settings.lane.saveCadence.error' }));
+    }
+  };
+  const restoreEmpty = () => setCadence((p) => ({
+    maxPer24h: p.maxPer24h.trim() === '' ? saved.maxPer24h : p.maxPer24h,
+    minGapMinutes: p.minGapMinutes.trim() === '' ? saved.minGapMinutes : p.minGapMinutes,
+  }));
+  const onCadenceBlur = () => { if (cadenceDirty) saveCadence(); else restoreEmpty(); };
+  const onCadenceKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveCadence(); }
+    else if (e.key === 'Escape') { e.preventDefault(); setCadence(saved); setCadenceErr(null); setCadenceState('idle'); }
+  };
 
   const invalidateAccounts = () => queryClient.invalidateQueries({ queryKey: ['accounts'] });
 
@@ -1559,6 +1763,9 @@ function MetaLaneControls() {
           label={laneTip}
         />
       </div>
+      {/* The .env decides: said directly under the chip it explains, BEFORE the controls,
+          and it is the disabled pause/resume control's accessible description. */}
+      {pausedByEnv ? <NoteTip id={envNoteId} tip={t('setup.envName', { name: META_PAUSE_ENV })}>{t('settings.lane.envOverride')}</NoteTip> : null}
       <div className="flex flex-wrap items-end gap-2.5">
         <label className="space-y-1">
           <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.lane.cadenceMaxLabel')}</span>
@@ -1566,6 +1773,8 @@ function MetaLaneControls() {
             type="number" min="1" step="1" inputMode="numeric"
             value={cadence.maxPer24h}
             onChange={(e) => setCadence((p) => ({ ...p, maxPer24h: e.target.value }))}
+            onBlur={onCadenceBlur}
+            onKeyDown={onCadenceKeyDown}
             aria-invalid={cadenceErr ? 'true' : undefined}
             className={`${FIELD} w-28`}
           />
@@ -1576,22 +1785,38 @@ function MetaLaneControls() {
             type="number" min="0" step="1" inputMode="numeric"
             value={cadence.minGapMinutes}
             onChange={(e) => setCadence((p) => ({ ...p, minGapMinutes: e.target.value }))}
+            onBlur={onCadenceBlur}
+            onKeyDown={onCadenceKeyDown}
             aria-invalid={cadenceErr ? 'true' : undefined}
             className={`${FIELD} w-28`}
           />
         </label>
+        {/* The save glyph holds its own slot (w-4) so the row never jumps when it appears. */}
+        <span className="flex h-9 w-4 items-center" aria-hidden="true">
+          {cadenceState === 'saving' ? <Loader2 size={15} className="animate-spin text-zinc-500 dark:text-zinc-400" />
+            : cadenceState === 'saved' ? <Check size={15} className="text-emerald-600 dark:text-emerald-300" />
+            : cadenceState === 'error' ? <AlertCircle size={15} className="text-red-600 dark:text-red-300" />
+            : null}
+        </span>
+        <span className="sr-only" role="status" aria-live="polite">{cadenceState === 'saved' ? t('settings.lane.saveCadence.saved') : ''}</span>
+        {pausedByEnv ? (
+          /* The .env pins the lane, so a file pause/resume would change nothing: the
+             control stays in place (and in the tab order, so its reason is heard) but is
+             disabled, described by the note under the chip. Never a live-looking dead button. */
+          <button
+            type="button"
+            aria-disabled="true"
+            aria-describedby={envNoteId}
+            aria-label={lanePaused ? t('settings.lane.resume.aria') : t('settings.lane.pause.aria')}
+            onClick={(e) => e.preventDefault()}
+            className={`${TAP_TARGET} flex cursor-not-allowed items-center gap-1.5 rounded-xl bg-zinc-200/60 px-2.5 py-1.5 text-xs font-bold text-zinc-700 opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:text-zinc-200`}
+          >
+            {lanePaused ? <PlayCircle size={13} aria-hidden="true" /> : <PauseCircle size={13} aria-hidden="true" />}
+            {lanePaused ? t('settings.lane.resume.idle') : t('settings.lane.pause.idle')}
+          </button>
+        ) : (
         <ActionButton
-          onAction={async () => {
-            setCadenceErr(null);
-            await setMetaLane({ cadence: { maxPer24h: Number(cadence.maxPer24h), minGapMinutes: Number(cadence.minGapMinutes) } });
-            invalidateAccounts();
-          }}
-          onError={setCadenceErr}
-          icon={CheckCircle2}
-          labels={{ idle: t('settings.lane.saveCadence.idle'), loading: t('settings.lane.saveCadence.loading'), success: t('settings.lane.saveCadence.success'), error: t('settings.lane.saveCadence.error') }}
-          ariaLabel={t('settings.lane.saveCadence.aria')}
-        />
-        <ActionButton
+          className={TAP_TARGET}
           onAction={async () => {
             if (lanePaused) {
               await setMetaLane({ paused: false });
@@ -1611,14 +1836,17 @@ function MetaLaneControls() {
             invalidateAccounts();
           }}
           icon={lanePaused ? PlayCircle : PauseCircle}
-          variant={lanePaused ? 'success' : 'danger'}
+          // D12: a pause is reversible, so Pause is the quiet neutral button, never the red
+          // danger tone; on a paused lane Resume is the one thing to do, so it is primary.
+          variant={lanePaused ? 'primary' : 'subtle'}
           labels={lanePaused
             ? { idle: t('settings.lane.resume.idle'), loading: t('settings.lane.resume.loading'), success: t('settings.lane.resume.success'), error: t('settings.lane.resume.error') }
             : { idle: t('settings.lane.pause.idle'), loading: t('settings.lane.pause.loading'), success: t('settings.lane.pause.success'), error: t('settings.lane.pause.error') }}
           ariaLabel={lanePaused ? t('settings.lane.resume.aria') : t('settings.lane.pause.aria')}
         />
+        )}
       </div>
-      {cadenceErr ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{cadenceErr}</p> : null}
+      <ActionError error={cadenceErr} />
       {usage ? (
         <p className={`text-[11px] ${usageWarn ? 'font-bold text-amber-700 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
           {usageWarn ? <Clock size={11} className="-mt-0.5 mr-1 inline" aria-hidden="true" /> : null}
@@ -1626,7 +1854,6 @@ function MetaLaneControls() {
           {usageWarn ? ` · ${t('settings.lane.usageWarn')}` : ''}
         </p>
       ) : null}
-      {pausedByEnv ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.lane.envOverride')}</p> : null}
     </div>
   );
 }
@@ -1668,7 +1895,7 @@ function PinterestVideoScopeNote({ t }) {
       {needsVideoScope ? (
         <div className="flex flex-wrap items-center gap-1.5">
           <p title={PINTEREST_VIDEO_SCOPE} className="text-[11px] text-amber-700 dark:text-amber-400">{t('setup.pinterest.reconnectVideo')}</p>
-          <DisconnectButton platform="pinterest" label={PLATFORM_META.pinterest?.label || 'Pinterest'} buttonLabel={t('setup.boards.reconnect')} />
+          <DisconnectButton platform="pinterest" label={PLATFORM_META.pinterest?.label || 'Pinterest'} buttonLabel={t('setup.boards.reconnect')} reconnect />
         </div>
       ) : null}
     </>
@@ -1743,7 +1970,7 @@ function BoardManager({ configRev }) {
       invalidateBoards();
     } catch (err) {
       if (err?.code === 'not_configured') setCreateNeedsScope(true);
-      else setCreateError(err?.message || t('setup.boards.error'));
+      else setCreateError(humanizeAction(err, t, { lane: 'pinterest' }));
     } finally {
       setCreating(false);
     }
@@ -1763,7 +1990,7 @@ function BoardManager({ configRev }) {
       invalidateBoards();
     } catch (err) {
       if (err?.code === 'not_configured') setDestNeedsScope(true);
-      else setDestError(err?.message || t('setup.identifier.saveError'));
+      else setDestError(humanizeAction(err, t, { fallbackKey: 'setup.identifier.saveError' }));
     } finally {
       setSettingId(null);
     }
@@ -1790,7 +2017,7 @@ function BoardManager({ configRev }) {
                 type="button"
                 onClick={() => setExpandedId((v) => (v === b.id ? null : b.id))}
                 aria-expanded={expandedId === b.id}
-                className="flex items-center gap-1.5 text-left text-xs font-bold transition hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                className={`${TAP_TARGET} flex items-center gap-1.5 text-left text-xs font-bold transition hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
               >
                 <ChevronDown size={12} aria-hidden="true" className={`transition-transform ${expandedId === b.id ? 'rotate-180' : ''}`} />
                 {b.name}
@@ -1798,7 +2025,7 @@ function BoardManager({ configRev }) {
               <span title={b.privacy} className="text-[10px] text-zinc-500 dark:text-zinc-400">{boardPrivacyLabel(t, b.privacy)}</span>
               <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{b.pinCount ?? 0}</span>
               {b.id === currentId ? (
-                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
+                <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold ${STATUS_INK.ok}`}>
                   <Check size={11} aria-hidden="true" />{t('setup.boards.current')}
                 </span>
               ) : (
@@ -1807,7 +2034,7 @@ function BoardManager({ configRev }) {
                   onClick={() => setDestination(b.id)}
                   disabled={settingId != null}
                   aria-label={`${t('setup.boards.setCurrent')}: ${b.name}`}
-                  className="ml-auto text-[11px] font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-brand-light"
+                  className={`${TAP_TARGET} ml-auto text-[11px] font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-brand-light`}
                 >
                   {settingId === b.id ? <Loader2 size={11} className="animate-spin" aria-hidden="true" /> : t('setup.boards.setCurrent')}
                 </button>
@@ -1849,11 +2076,7 @@ function BoardManager({ configRev }) {
           <ShieldAlert size={12} aria-hidden="true" /> {t('setup.boards.needsScope')}
         </p>
       ) : null}
-      {createError ? (
-        <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-          <AlertCircle size={11} aria-hidden="true" /> {createError}
-        </p>
-      ) : null}
+      <ActionError error={createError} />
       {/* Spec 29 review (MAJOR-1): "Set as destination"'s own inline error - never a
           silent spinner-clear on a stale rev / racing write / network blip. */}
       {destNeedsScope ? (
@@ -1861,11 +2084,7 @@ function BoardManager({ configRev }) {
           <ShieldAlert size={12} aria-hidden="true" /> {t('setup.boards.needsScope')}
         </p>
       ) : null}
-      {destError ? (
-        <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-          <AlertCircle size={11} aria-hidden="true" /> {destError}
-        </p>
-      ) : null}
+      <ActionError error={destError} />
     </div>
   );
 }
@@ -1899,7 +2118,7 @@ function BoardSections({ boardId, t }) {
       // a missing boards:write scope reads as the localized "reconnect" note,
       // never the raw English engine string.
       if (err?.code === 'not_configured') setNeedsScope(true);
-      else setError(err?.message || t('setup.boards.error'));
+      else setError(humanizeAction(err, t, { lane: 'pinterest' }));
     } finally {
       setBusy(false);
     }
@@ -1914,7 +2133,7 @@ function BoardSections({ boardId, t }) {
         // disconnect the card footer offers, relabelled, so reconnecting starts right here.
         <div className="flex flex-wrap items-center gap-1.5">
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.boards.sectionsUnavailable')}</p>
-          <DisconnectButton platform="pinterest" label={PLATFORM_META.pinterest?.label || 'Pinterest'} buttonLabel={t('setup.boards.reconnect')} />
+          <DisconnectButton platform="pinterest" label={PLATFORM_META.pinterest?.label || 'Pinterest'} buttonLabel={t('setup.boards.reconnect')} reconnect />
         </div>
       ) : items.length === 0 ? (
         <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.pinterest.sectionEmpty')}</p>
@@ -1941,7 +2160,7 @@ function BoardSections({ boardId, t }) {
           <ShieldAlert size={12} aria-hidden="true" /> {t('setup.boards.needsScope')}
         </p>
       ) : null}
-      {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} />
     </div>
   );
 }
@@ -2010,7 +2229,7 @@ function GbpGalleryPanel({ t }) {
       queryClient.invalidateQueries({ queryKey: ['gbp-media'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
     } catch (err) {
-      setError(err?.message || t('setup.gbp.error'));
+      setError(humanizeAction(err, t, { lane: 'gbp' }));
     } finally {
       setBusy(false);
     }
@@ -2077,7 +2296,7 @@ function GbpGalleryPanel({ t }) {
           </button>
         </div>
       ) : null}
-      {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} />
     </div>
   );
 }
@@ -2101,7 +2320,7 @@ function GbpAttributesPanel({ t }) {
       queryClient.invalidateQueries({ queryKey: ['gbp-attributes'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
     } catch (err) {
-      setError(err?.message || t('setup.gbp.error'));
+      setError(humanizeAction(err, t, { lane: 'gbp' }));
     } finally {
       setBusyId(null);
     }
@@ -2165,7 +2384,7 @@ function GbpAttributesPanel({ t }) {
     <div className="space-y-2">
       <h4 className={EYEBROW}>{t('setup.gbp.attributes.title')}</h4>
       {body}
-      {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} />
     </div>
   );
 }
@@ -2218,7 +2437,7 @@ function GhostAudienceBlock({ live = true }) {
       queryClient.invalidateQueries({ queryKey: ['ghost-newsletters'] });
       queryClient.invalidateQueries({ queryKey: ['activity'] });
     } catch (err) {
-      setError(err?.message || t('setup.ghost.audienceError'));
+      setError(humanizeAction(err, t, { lane: 'ghost' }));
     } finally {
       setBusyId(null);
     }
@@ -2291,7 +2510,7 @@ function GhostAudienceBlock({ live = true }) {
         <h4 className={EYEBROW}>{t('setup.ghost.newsletters')}</h4>
         {newslettersBody}
       </div>
-      {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} />
     </div>
   );
 }
@@ -2343,6 +2562,9 @@ function ProfileEdit({ platformId }) {
     return result;
   };
 
+  // ActionButton hands over the error's message only; the sentence comes from the one mapper.
+  const onFail = (message) => setError(humanizeAction({ message }, t, { lane: platformId, fallbackKey: 'setup.profile.error' }));
+
   const checkAccess = async () => {
     setError(null);
     const result = await apiFn({ probe: true });
@@ -2355,7 +2577,8 @@ function ProfileEdit({ platformId }) {
   // (mastodon `handle`, x `screenName`, youtube `channelId`, nostr `npub`) - echo
   // it as a muted "Currently: ..." line ABOVE the blank fields so blank-means-keep
   // has its current-value context, without any new read verb. Lanes whose probe
-  // carries no discrete field (telegram) fall back to the probe's own detail line.
+  // carries no discrete field (telegram) say the pass in a plain sentence; the probe's
+  // own English detail line rides the house "?" beside it, never inline.
   const probeIdentity = probeRow && probeRow.ok
     ? (probeRow.handle ? `@${String(probeRow.handle).replace(/^@/, '')}`
       : probeRow.screenName ? `@${String(probeRow.screenName).replace(/^@/, '')}`
@@ -2368,7 +2591,7 @@ function ProfileEdit({ platformId }) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        className={`${TAP_TARGET} flex items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
       >
         <h4 className={EYEBROW}>{t('setup.profile.edit')}</h4>
         <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -2376,9 +2599,9 @@ function ProfileEdit({ platformId }) {
       {open ? (
         <div className="space-y-2.5">
           {probeRow && probeRow.ok ? (
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-              {probeIdentity ? t('setup.profile.currently', { identity: probeIdentity }) : probeRow.detail}
-            </p>
+            probeIdentity
+              ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.profile.currently', { identity: probeIdentity })}</p>
+              : <NoteTip tip={probeRow.detail || null}>{t('setup.profile.accessOk')}</NoteTip>
           ) : null}
           <div className="grid gap-2.5 sm:grid-cols-2">
             {fields.map((f) => (
@@ -2409,15 +2632,17 @@ function ProfileEdit({ platformId }) {
               disabled={!dirty}
               icon={CheckCircle2}
               labels={{ idle: t('setup.profile.apply'), loading: t('setup.profile.applying'), success: t('setup.profile.applied'), error: t('setup.profile.error') }}
-              onError={setError}
+              onError={onFail}
               ariaLabel={t('setup.profile.apply')}
+              className={TAP_TARGET}
             />
             <ActionButton
               onAction={checkAccess}
               icon={ShieldCheck}
               labels={{ idle: t('setup.profile.checkAccess'), loading: t('setup.profile.checking'), success: t('setup.profile.checkAccess'), error: t('setup.profile.error') }}
-              onError={setError}
+              onError={onFail}
               ariaLabel={t('setup.profile.checkAccess')}
+              className={TAP_TARGET}
             />
           </div>
           {!dirty ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.profile.nothing')}</p> : null}
@@ -2434,7 +2659,7 @@ function ProfileEdit({ platformId }) {
                   href={isAbsoluteHttpUrl(probeRow.helpUrl) ? probeRow.helpUrl : GCP_APIS_CONSOLE_URL}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-0.5 text-[11px] font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                  className={`${TAP_TARGET} inline-flex items-center gap-0.5 text-[11px] font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light`}
                 >
                   <ExternalLink size={11} aria-hidden="true" /> {t('setup.profile.apiDisabledCta')}
                 </a>
@@ -2443,7 +2668,7 @@ function ProfileEdit({ platformId }) {
               <IconBadge icon={Lock} tone="warn" text={t('setup.profile.needsScope')} label={probeRow.detail || ''} />
             )
           ) : null}
-          {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+          <ActionError error={error} />
         </div>
       ) : null}
     </div>
@@ -2468,9 +2693,25 @@ function RedditWarmthNote({ warmth, t }) {
   );
 }
 
-function PlatformDetail({ platform, capability, configRev, identifiers, posting, onWrite, radarCaps }) {
+// The expiry line for a lane that CANNOT renew itself (no refresh token) and expires within
+// 14 days, or already expired: { key, n } for the copy, else null. A lane that renews itself
+// (canAutoRenew, lib/writes.mjs dailyTokenRefresh does it 14 days ahead) never shows one.
+const EXPIRY_WINDOW_MS = 14 * 24 * 3600 * 1000;
+export function expiryNotice(account, now = Date.now()) {
+  if (!account || account.canAutoRenew || !account.tokenExpiresAt) return null;
+  const left = Date.parse(account.tokenExpiresAt) - now;
+  if (!Number.isFinite(left) || left > EXPIRY_WINDOW_MS) return null;
+  if (left <= 0) return { key: 'setup.expiry.expired', n: 0 };
+  const n = Math.ceil(left / (24 * 3600 * 1000));
+  return n <= 1 ? { key: 'setup.expiry.one', n: 1 } : { key: 'setup.expiry.soon', n };
+}
+
+function PlatformDetail({ platform, capability, configRev, identifiers, posting, onWrite, radarCaps, cloudRefusal = null, localRefusal = null }) {
   const t = useT();
   const { platform: id, label, status, missing = [], validation, playbook, beta } = platform;
+  // One card is mounted at a time (master-detail), so this shared, cached read is cheap.
+  const { data: accounts } = useAccounts();
+  const expiry = status === 'connected' ? expiryNotice(accounts?.[id]) : null;
   const tone = statusTone(status, validation);
   const secrets = missing.filter((m) => m.kind === 'secret');
   // A connected lane that has not proven itself live (no/failed probe) gets a per-card
@@ -2481,6 +2722,29 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
   // brokenState is null for a healthy (or skipped) lane, so the reason block and the
   // fix prompt appear together or not at all.
   const brokenState = status === 'connected' ? BROKEN_STATE[validation?.state] || null : null;
+  // ONE failure drives the chip AND the sentence under it, in StatusChip's precedence: a local
+  // publish that failed on this lane's credential (localRefusal, a reconnect by definition)
+  // outranks the live probe. So "Berechtigung fehlt" never sits above "Die Verbindung ist
+  // abgelaufen" (judge final2). When that failure's recovery is a reconnect, the card offers it.
+  const problem = localRefusal
+    ? { message: localRefusal.message, code: localRefusal.code, lane: id }
+    : validation?.state === 'failed' ? { message: validation.detail, lane: id } : null;
+  const problemSentence = problem
+    ? humanizeCheck(problem, t).text || (localRefusal ? humanizeFailure(problem, t).text : null)
+    : null;
+  const reconnect = status === 'connected' && Boolean(problem)
+    && (Boolean(localRefusal) || RECONNECT_KEYS.has(failureKey(problem)));
+  // D5: a static-key lane reconnects in place. Keyed by lane id, so switching lanes in the
+  // rail (this component is reused, not remounted) never carries an open panel across.
+  const inPlaceReconnect = reconnect && IN_PLACE_RECONNECT_LANES.has(id) && Boolean(CONNECT_FIELDS[id]);
+  const [reconnectOpenFor, setReconnectOpenFor] = useState(null);
+  // The sentence the connected branch prints under the chip (null when it prints none).
+  const showsBroken = status === 'connected' && !(validation?.state === 'live' && !localRefusal) && Boolean(brokenState?.reasonKey || localRefusal);
+  // D9: an incomplete lane with a known problem prints its sentence too (it used to live only in
+  // the chip's tooltip). A raw message that maps to nothing stays the chip's tooltip.
+  const inlineSentence = showsBroken
+    ? problemSentence || t((brokenState || BROKEN_STATE.failed).reasonKey)
+    : status === 'incomplete' ? problemSentence : null;
   const setupPrompt = useMemo(() => buildSetupPrompt(label, playbook, id), [label, playbook, id]);
   const fixPrompt = useMemo(
     () => (brokenState ? buildFixPrompt({ label, platform: id, validation, connectAction: platform.connectAction, playbook }) : null),
@@ -2531,11 +2795,11 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
 
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <StatusChip status={status} validation={validation} t={t} />
+            <StatusChip status={status} validation={validation} t={t} cloudRefusal={cloudRefusal} localRefusal={localRefusal} laneName={label} laneId={id} inlineSentence={inlineSentence} />
             {/* A beta lane is built but not yet live-verified: an honest, single-tone
                 note beside the status chip. It promises nothing - the live probe still
-                governs the real connection state. */}
-            {beta ? <IconBadge icon={AlertCircle} tone="warn" text={t('setup.beta.badge')} label={t('setup.beta.hint')} /> : null}
+                governs the real connection state. Neutral (D12): it informs, it does not warn. */}
+            {beta ? <IconBadge icon={AlertCircle} tone="neutral" text={t('setup.beta.badge')} label={t('setup.beta.hint')} /> : null}
             {/* WHERE this lane fires from (cloud 24/7 / native / local-only) - the
                 pre-purchase honesty badge, driven by the cloud capability map. */}
             <CapabilityBadge capability={capability} t={t} />
@@ -2548,11 +2812,14 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
 
           {status === 'incomplete' ? (
             <div className="space-y-2.5">
+              {inlineSentence ? <p className="text-[11px] text-zinc-600 dark:text-zinc-300">{inlineSentence}</p> : null}
               {/* Prompt-first: the AI hero leads (copy ONE prompt, get guided); every
                   manual control sits behind the single ManualSetup expert disclosure.
                   No playbook -> no hero, so the disclosure opens by default. */}
               <PromptHero label={label} ns="setup.aiPrompt" text={setupPrompt} />
-              <ManualSetup defaultOpen={!playbook}>
+              {/* A reconnect refusal (the chip says "Neu verbinden behebt das") opens the manual
+                  path, so the connect route it promises is in view, not folded away. */}
+              <ManualSetup defaultOpen={!playbook || Boolean(localRefusal)}>
                 {/* Required-first: the identifiers a connection NEEDS lead, then the
                     credential panel, then the public-profile niceties (zone="optional"
                     below) - so the "Optional" divider never sits above the secret. */}
@@ -2561,11 +2828,11 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
                     kept but demoted. A lane missing only an identifier shows neither. */}
                 {secrets.length && CONNECT_FIELDS[id] ? (
                   <>
-                    <ConnectPanel platform={id} fields={CONNECT_FIELDS[id].fields} interactive={CONNECT_FIELDS[id].interactive} />
+                    <ConnectPanel platform={id} fields={CONNECT_FIELDS[id].fields} interactive={CONNECT_FIELDS[id].interactive} submitLabel={localRefusal ? t('connection.issue.reconnect') : null} />
                     <TerminalAlternative secrets={secrets} />
                   </>
                 ) : (
-                  secrets.map((item, i) => <SecretRow key={`secret-${i}`} label={item.label} action={item.action} />)
+                  secrets.map((item, i) => <SecretRow key={`secret-${i}`} action={item.action} />)
                 )}
                 {/* Public-profile niceties last: they never block a connection. */}
                 <IdentifierFields platformId={id} identifiers={identifiers} configRev={configRev} zone="optional" />
@@ -2582,21 +2849,48 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
                   dead-end here: failed rendered nothing at all, unproven and blocked
                   shared one vague line, and the probe's own verdict was reachable only
                   by hovering the chip. They now share one honest block - what happened
-                  and why in plain words, the platform's own message underneath, and the
-                  debug-and-fix prompt (the same affordance the incomplete card has). */}
-              {validation?.state === 'live' ? (
-                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.connectedNote')}</p>
-              ) : brokenState ? (
+                  and why in one plain sentence (the platform's own message on the chip
+                  tooltip), and the debug-and-fix prompt (the same affordance the
+                  incomplete card has). */}
+              {validation?.state === 'live' && !localRefusal ? (
+                // A sign-in that cannot renew itself and runs out soon replaces the "ready"
+                // line with its expiry and the existing reconnect route, nothing else.
+                expiry ? (
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-zinc-600 dark:text-zinc-300">{t(expiry.key, { n: expiry.n })}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <DisconnectButton platform={id} label={label} buttonLabel={t('connection.issue.reconnect')} primary reconnect />
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.connectedNote')}</p>
+                )
+              ) : showsBroken ? (
                 <div className="space-y-2">
-                  <p className="text-[11px] text-zinc-600 dark:text-zinc-300">{t(brokenState.reasonKey)}</p>
-                  {/* The probe's raw message: free text from the platform, truncated to
-                      200 chars server-side (lib/health.mjs). It is the technical detail,
-                      never the primary sentence - so it renders quiet and secondary,
-                      and only when there is one. */}
-                  {validation?.detail ? (
-                    <p className="break-words text-[11px] text-zinc-500 dark:text-zinc-400">
-                      {t('setup.reason.reported', { detail: validation.detail })}
-                    </p>
+                  {/* ONE plain sentence: the probe's raw message mapped by lib/failureCopy.js
+                      (an expired token reads "Die Verbindung ist abgelaufen. Verbinde Meta
+                      neu."), else the state's own reason. The raw platform text never renders
+                      inline: it rides the StatusChip tooltip only. */}
+                  <p className="text-[11px] text-zinc-600 dark:text-zinc-300">{inlineSentence}</p>
+                  {/* The recovery the sentence names, as the card's primary action. It is the
+                      existing reconnect route (the Pinterest reconnect notice's): the disconnect
+                      ceremony relabelled, after which the card shows the connect panel. It
+                      replaces the footer "Trennen", so the card gains no button. */}
+                  {/* D5: a static-key lane replaces its key in place instead: the button opens
+                      the same ConnectPanel the incomplete card uses (secrets blank), and the
+                      panel's own submit, labelled "Neu verbinden", takes the button's place. */}
+                  {inPlaceReconnect ? (
+                    reconnectOpenFor === id ? (
+                      <ConnectPanel platform={id} fields={CONNECT_FIELDS[id].fields} interactive={CONNECT_FIELDS[id].interactive} submitLabel={t('connection.issue.reconnect')} autoFocus />
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button type="button" onClick={() => setReconnectOpenFor(id)} className={BTN_BRAND}>{t('connection.issue.reconnect')}</button>
+                      </div>
+                    )
+                  ) : reconnect ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <DisconnectButton platform={id} label={label} buttonLabel={t('connection.issue.reconnect')} primary reconnect />
+                    </div>
                   ) : null}
                   {/* The debug-and-fix prompt claims "it has what the platform reported" -
                       true only after a probe actually ran. An UNPROVEN lane has no report
@@ -2605,7 +2899,7 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
                       That rule lives in BROKEN_STATE/buildFixPrompt (no diagnose steps ->
                       null text -> PromptHero renders nothing), so this stays a plain
                       render with no state name repeated here to drift out of sync. */}
-                  <PromptHero label={label} ns="setup.fixPrompt" text={fixPrompt} />
+                  <PromptHero label={label} ns="setup.fixPrompt" text={fixPrompt} quiet={reconnect} />
                 </div>
               ) : null}
               {/* Spec 16: a one-line note on the Reddit submission kinds + flair now supported. */}
@@ -2632,12 +2926,17 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
                   media-server affordance (P9 - articles publish text-only without it). */}
               {id === 'nostr' ? (
                 <>
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.nostr.longform')}</p>
+                  {/* side="bottom" (D6): on a broken card this note sits right under the
+                      reconnect / fix-prompt buttons, which a bubble opening upwards would cover. */}
+                  <NoteTip tip={t('setup.nostr.longform.tip')} side="bottom">{t('setup.nostr.longform')}</NoteTip>
                   {/* Spec 18 (P9): honest media state. When a NIP-96 media server is
-                      configured, say images publish; otherwise show the "set it" hint. */}
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t(platform.mediaServer ? 'setup.nostr.mediaServerReady' : 'setup.nostr.mediaServer')}</p>
+                      configured, say images publish; otherwise say in words what is missing.
+                      The protocol and the .env variable name sit behind the "?" only. */}
+                  {platform.mediaServer
+                    ? <NoteTip tip={t('setup.nostr.mediaServerReady.tip')}>{t('setup.nostr.mediaServerReady')}</NoteTip>
+                    : <NoteTip tip={t('setup.nostr.mediaServer.tip', { name: NOSTR_MEDIA_ENV })}>{t('setup.nostr.mediaServer')}</NoteTip>}
                   {/* Spec 20: the optional NWC wallet enables sending zaps (value-for-value). */}
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.nostr.nwc')}</p>
+                  <NoteTip tip={t('setup.nostr.nwc.tip', { name: NOSTR_NWC_ENV })}>{t('setup.nostr.nwc')}</NoteTip>
                 </>
               ) : null}
               {/* hideAssetPicker: pinterest's board list/picker moved to
@@ -2659,46 +2958,45 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-2">
-            {canValidate ? <ValidateButton platform={id} /> : null}
-            {status === 'connected' ? <DisconnectButton platform={id} label={label} /> : null}
-          </div>
-
           {/* WP6: the card's TWO switches - "active in pendpost" (one per display lane;
               absorbs skip/unskip, the Settings platform grid and the Facebook button) and,
-              on radar-capable lanes while Radar is on, "Radar scans this platform". */}
-          <div className="space-y-2 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
+              on radar-capable lanes while Radar is on, "Radar scans this platform".
+              Each row is 44px tall (min-h-11) so the switch's and the "?"'s 44px hit areas
+              never overlap the next row's (Meta stacks two rows with the same label length).
+              State before actions: these rows come BEFORE the Prüfen/Trennen row, which closes
+              the card's own controls, so an open tip never covers a button (phase-3 D-2: a
+              downward tip near the page end collision-flipped up onto Prüfen at 375px). */}
+          <div className="border-t border-zinc-200/70 pt-1 dark:border-zinc-700/60">
             {displays.map((p) => {
               const rowLabel = displays.length > 1
                 ? t('setup.platform.activeNamed', { platform: PLATFORM_META[p]?.label || p })
                 : t('setup.platform.active');
               return (
-                <div key={p} className="flex items-center justify-between gap-3">
+                <div key={p} className="flex min-h-11 items-center justify-between gap-3">
                   <span className="flex items-center gap-1.5 text-sm">
                     {rowLabel}
-                    <Tip label={t('setup.platform.active.tip')}>
-                      <button type="button" aria-label={t('settings.fieldHelp', { field: rowLabel })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
-                        <HelpCircle size={12} aria-hidden="true" />
-                      </button>
-                    </Tip>
+                    {/* The rows sit ABOVE the Prüfen/Trennen row, so every tip opens upwards,
+                        away from those buttons (D6, phase-3 D-2, measured at 375px). */}
+                    <InfoTip label={t('setup.platform.active.tip')} />
                   </span>
                   <Switch checked={activeOn(p)} onChange={() => toggleActive(p)} ariaLabel={rowLabel} />
                 </div>
               );
             })}
             {radarCap ? (
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex min-h-11 items-center justify-between gap-3">
                 <span className="flex items-center gap-1.5 text-sm">
                   {t('setup.platform.radar.toggle')}
-                  <Tip label={t('setup.platform.radar.tip')}>
-                    <button type="button" aria-label={t('settings.fieldHelp', { field: t('setup.platform.radar.toggle') })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
-                      <HelpCircle size={12} aria-hidden="true" />
-                    </button>
-                  </Tip>
+                  <InfoTip label={t('setup.platform.radar.tip')} />
                 </span>
                 <Switch checked={radarScanOn} onChange={toggleRadarScan} ariaLabel={t('setup.platform.radar.toggle')} />
               </div>
             ) : null}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {canValidate ? <ValidateButton platform={id} /> : null}
+            {status === 'connected' && !reconnect ? <DisconnectButton platform={id} label={label} /> : null}
           </div>
 
           {/* The Meta publishing kill-switch + cadence floor live at the bottom of the
@@ -2785,6 +3083,20 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
   // The server read never fails (baked fallback offline); while it is still in
   // flight the cards simply render without a capability chip.
   const { data: capabilities } = useCapabilities();
+  // Cloud credential refusals for the ACTIVE project, keyed by lane (cloud lane ids match
+  // the setup ids): the cloud popover's "Reconnect" lands here, and the lane's chip then
+  // names the cloud's reason. Read from the same roll-up as the header dot.
+  const { data: cloud } = useCloud();
+  const cloudConnected = Boolean(cloud?.workspaceId && cloud?.apiKey?.present);
+  const { data: cloudClients } = useCloudClients(cloudConnected);
+  const activeCloudId = ((cloudClients?.clients) || []).find((c) => c.active)?.clientId || null;
+  const cloudRefusals = {};
+  for (const i of (cloud?.sync?.issues || [])) {
+    if (i.kind === 'credential' && i.lane && i.clientId === activeCloudId && !cloudRefusals[i.lane]) cloudRefusals[i.lane] = i.code || 'account_unresolved';
+  }
+  // Local credential failures (post detail "Neu verbinden"), from the plans the app already polls.
+  const { data: plans } = usePlans();
+  const localRefusals = localRefusalsByLane(plans);
   const setup = health?.setup;
   // WP6: the per-card Radar scan switch is driven by the SERVER's capability table (the
   // same read the Radar page makes) and renders only while Radar itself is on.
@@ -2806,7 +3118,7 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
       queryClient.invalidateQueries({ queryKey: ['config'] });
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
     } catch (err) {
-      setBanner(err.message || t('setup.writeError'));
+      setBanner(humanizeAction(err, t, { fallbackKey: 'setup.writeError' }));
       throw err;
     }
   };
@@ -2840,12 +3152,15 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
   const detailRef = useRef(null);
   const select = (id) => {
     setSelected(id);
-    // On the stacked (<lg) layout the detail replaces the list, so bring its top into
-    // view; on desktop the sticky rail keeps both aligned and no scroll is wanted.
+    // Bring the detail's top into view when it sits above the visible area of <main> (the
+    // page scroller): on <lg the detail replaces a scrolled list, and on desktop a lane
+    // picked low in the rail (15 rows, taller than the viewport) opens a detail that starts
+    // back at the rail's top. One rule for every width; a visible detail never jumps.
     requestAnimationFrame(() => {
-      if (window.matchMedia && window.matchMedia('(max-width: 1023px)').matches) {
-        detailRef.current?.scrollIntoView({ block: 'start' });
-      }
+      const el = detailRef.current;
+      if (!el) return;
+      const viewTop = el.closest('main')?.getBoundingClientRect().top ?? 0;
+      if (el.getBoundingClientRect().top < viewTop) el.scrollIntoView({ block: 'start' });
     });
   };
 
@@ -2865,10 +3180,10 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
-      <header>
-        <h2 className="font-display text-lg font-bold">{t('setup.title')}</h2>
-        <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.subtitle')}</p>
-      </header>
+      {/* The page title ("Einrichtung") is the app chrome's own <h1> (App.jsx pageTitle); the page
+          does not repeat it (D13, precedent Settings.jsx). The subtitle stays: it says where the
+          secrets live. */}
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.subtitle')}</p>
 
       {isLoading || !setup ? (
         <>
@@ -2888,18 +3203,18 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
           {/* Summary: "X of Y platforms ready" + an overall ready / incomplete
               affirmation. connected + skipped both count as "resolved" (ready)
               against the total; skipped platforms are NEVER counted as incomplete. */}
-          {/* One truth on one screen: the summary counts derive from the SAME grouping
-              the rail shows (live-proven = connected, everything unfinished or unproven
-              = attention), so "X verbunden" can never contradict "Verbunden (Y)" below.
-              This is the stricter read than the server's structural summary.connected -
-              a connected-but-failed lane is not "ready" and does not count as one. */}
+          {/* One truth on one screen: the ONE summary count derives from the SAME
+              grouping the rail shows (live-proven = connected, everything unfinished or
+              unproven = attention). A connected-but-failed lane is not "ready" and does
+              not count as one; its row says "Verbindung fehlgeschlagen" under "Braucht
+              Aufmerksamkeit". The per-bucket breakdown line ("0 verbunden, ...") is gone:
+              the rail's group headings carry those counts next to the rows they count,
+              and a bare "verbunden" count read as a lie beside a lane whose panel says
+              "Verbunden als ..." (credential present, last check failed). */}
           <section className={`flex flex-wrap items-center gap-2.5 rounded-2xl p-4 ${INNER_SURFACE}`} aria-label={t('setup.summary.aria')}>
             <div className="min-w-0">
               <p className="text-sm font-bold">
                 {t('setup.summary.ready', { ready: groups.connected.length + groups.skipped.length, total: setup.summary.total })}
-              </p>
-              <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-                {t('setup.summary.breakdown', { connected: groups.connected.length, skipped: groups.skipped.length, incomplete: groups.attention.length })}
               </p>
             </div>
             <div className="ml-auto flex items-center gap-2.5">
@@ -2907,8 +3222,8 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
                 <IconBadge icon={CheckCircle2} tone="ok" text={t('setup.allReady')} />
               ) : (
                 // Plain state affirmation paralleling "All ready" - the incomplete COUNT
-                // already lives in the breakdown line to the left, so the pill no longer
-                // repeats it (avoids stating "9" twice inches apart).
+                // already lives in the "X of Y ready" line and the rail headings, so the pill
+                // does not repeat it.
                 <IconBadge icon={AlertCircle} tone="warn" text={t('setup.status.incomplete')} />
               )}
               <button type="button" onClick={validateAll} disabled={validatingAll} aria-busy={validatingAll} className={BTN_GHOST}>
@@ -2921,7 +3236,7 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
 
           {/* The write-error banner sits adjacent to the summary + the card controls
               that trigger writePosting, so a failed write is seen without scrolling. */}
-          {banner ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{banner}</p> : null}
+          <ActionError error={banner} className="rounded-xl bg-red-500/10 p-3" />
 
           {/* Master-detail: the rail is the overview (every lane, grouped by state, one
               line each), the pane holds ONE open lane. The agent rides pinned on top of
@@ -2929,13 +3244,13 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
               connect ceremony as the platform lanes - and the one step pendpost cannot
               do for you). On <lg the rail is the page and selecting swaps to the detail. */}
           <div className="lg:flex lg:items-start lg:gap-4">
-            {/* Deliberately NOT sticky: the shell's glass-panel wrapper (overflow-x-auto)
-                would hijack the sticky containing block anyway, and at 15 rows the rail
-                is taller than the viewport - a pinned rail would leave its bottom rows
-                unreachable. It scrolls with the page; no inner scroll box (shell rule). */}
+            {/* Deliberately NOT sticky: at 15 rows the rail is taller than the viewport, so a
+                rail pinned to the top of <main> would leave its bottom rows unreachable. It
+                scrolls with the page; no inner scroll box (shell rule). select() brings the
+                detail into view instead. */}
             <nav
               aria-label={t('setup.rail.aria')}
-              className={`${selected ? 'hidden lg:block' : ''} space-y-1 lg:w-80 lg:shrink-0 lg:self-start`}
+              className={`${selected ? 'hidden lg:block' : ''} space-y-1 lg:w-80 lg:shrink-0`}
             >
               <RailRow
                 id="agent"
@@ -2955,7 +3270,7 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
                       id={p.platform}
                       icon={<PlatformGlyphs platformId={p.platform} tone={statusTone(p.status, p.validation)} />}
                       label={p.label}
-                      stateText={statusText(p.status, p.validation, t)}
+                      stateText={statusText(p.status, p.validation, t, cloudRefusals[p.platform] || null, openLocalRefusal(localRefusals, p))}
                       current={effective === p.platform}
                       implicit={!selected}
                       onSelect={() => select(p.platform)}
@@ -2973,7 +3288,7 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
               {effective === 'agent' ? (
                 <AgentDetail agent={setup.agent} onNavigate={onNavigate} />
               ) : selectedPlatform ? (
-                <PlatformDetail platform={selectedPlatform} capability={capabilities?.lanes?.[selectedPlatform.platform] || null} configRev={config?.rev} identifiers={config?.identifiers} posting={config?.posting} onWrite={writePosting} radarCaps={radarCaps} />
+                <PlatformDetail platform={selectedPlatform} capability={capabilities?.lanes?.[selectedPlatform.platform] || null} configRev={config?.rev} identifiers={config?.identifiers} posting={config?.posting} onWrite={writePosting} radarCaps={radarCaps} cloudRefusal={cloudRefusals[selectedPlatform.platform] || null} localRefusal={openLocalRefusal(localRefusals, selectedPlatform)} />
               ) : null}
             </div>
           </div>

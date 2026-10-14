@@ -103,7 +103,7 @@ describe('ReadinessChecklist - aggregate not-connected row (US-ONB-12)', () => {
       ],
     };
     renderChecklist();
-    expect(screen.getByText('3 platforms not connected yet - open Setup')).toBeInTheDocument();
+    expect(screen.getByText('3 platforms not connected yet. Open Setup')).toBeInTheDocument();
     expect(screen.getByText('X · Mastodon · Nostr')).toBeInTheDocument();
     // The failed lane is a different problem - it keeps its own row.
     expect(screen.getByText(/Pinterest/)).toBeInTheDocument();

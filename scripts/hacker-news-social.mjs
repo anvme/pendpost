@@ -26,6 +26,16 @@ import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 export const RUN = { results: [] };
 let JSON_MODE = false;
 
+// The Algolia request for ONE keyword (2026-09-30). Unquoted, Algolia fuzzes a term with typo
+// tolerance and prefix matching: "bexio" returned 1196 hits (Benioff, Texio), "accounting" matched
+// "counting", a product name matched "bookshops". So each keyword goes out as ONE quoted phrase with
+// advancedSyntax on (the quotes mean "this exact phrase") and typoTolerance off. Exported so a
+// test can assert the request without a network.
+export function hnSearchUrl(term) {
+  const phrase = String(term || '').replace(/"/g, ' ').replace(/\s+/g, ' ').trim();
+  return `https://hn.algolia.com/api/v1/search_by_date?${new URLSearchParams({ query: `"${phrase}"`, tags: '(story,comment)', hitsPerPage: '25', advancedSyntax: 'true', typoTolerance: 'false' }).toString()}`;
+}
+
 // The Radar (beta) SEARCH verb (spec 33, Pattern P3 read). Algolia search_by_date over
 // stories + comments (newest-first). No auth (public index) - so no needs_scope on creds;
 // only a 429 degrades to rate_limited, any other transport error to engine_failure. Never
@@ -56,7 +66,7 @@ export async function cmdRadar(args) {
   let lastError = null; // transient/other search failure (5xx etc.)
   let anySearchOk = false;
   for (const q of terms) {
-    const url = `https://hn.algolia.com/api/v1/search_by_date?${new URLSearchParams({ query: q, tags: '(story,comment)', hitsPerPage: '25' }).toString()}`;
+    const url = hnSearchUrl(q);
     const { ok, status, json, retryAfter, error } = await radarHttp(url);
     if (!ok) {
       // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.

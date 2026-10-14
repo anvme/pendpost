@@ -142,8 +142,26 @@ try {
       Object.keys(body.lanes.reddit).sort(),
       // cooldownStartedAt (spec 50 P3 §8) rides beside pausedUntil: when a cool-down ENDS and
       // when it BEGAN are two different facts, and P5's one-push-per-cool-down needs the second.
-      ['cooldownStartedAt', 'enabled', 'handle', 'handleSeen', 'lastProbeAt', 'pauseReason', 'pausedUntil', 'reason', 'usable'],
+      // credential: the stored-credential FACT for an API-route lane ('none' | 'stored' |
+      // 'live'), null for a browser lane (its credential is the owner's Chrome login, which only
+      // a probe can see). It is what lets every surface say "Not connected" before any probe ran.
+      ['cooldownStartedAt', 'credential', 'enabled', 'handle', 'handleSeen', 'lastProbeAt', 'pauseReason', 'pausedUntil', 'reason', 'usable'],
     );
+    ok(body.lanes.bluesky.credential === 'none' && body.lanes.bluesky.reason === 'checking',
+      'bluesky with no app password in the .env reads credential "none" before anything probed it');
+    ok(body.lanes.reddit.credential === 'none', 'an API lane with no stored Setup credential reads "none" too');
+    ok(body.lanes.quora.credential === null && body.lanes.hackernews.credential === null,
+      'a browser lane has no stored credential to report: null, never a guessed "none"');
+    fs.writeFileSync(path.join(DEFAULT, '.env'), 'BLUESKY_IDENTIFIER=acme.bsky.social\nBLUESKY_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx\nMASTODON_INSTANCE_URL=https://mastodon.example\nMASTODON_ACCESS_TOKEN=tok\n');
+    const hs = loadState();
+    hs.health = { ...(hs.health || {}), mastodon: { ok: true, checkedAt: new Date().toISOString() } };
+    saveState();
+    const stored = (await rest('GET', '/api/engage')).json;
+    ok(stored.lanes.bluesky.credential === 'stored', 'with the app password stored, bluesky reads "stored" (present, never probed)');
+    ok(stored.lanes.mastodon.credential === 'live', 'a stored credential whose Setup liveness probe passed reads "live"');
+    fs.rmSync(path.join(DEFAULT, '.env'), { force: true });
+    delete hs.health.mastodon;
+    saveState();
     ok(true, 'each lane row carries the owner\'s intent (enabled, handle) AND the platform\'s reality side by side');
     ok(body.lanes.reddit.enabled === true && body.lanes.reddit.usable === true && body.lanes.reddit.reason === 'ready',
       'an enabled, probed platform reads enabled + usable + ready');

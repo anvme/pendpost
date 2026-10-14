@@ -8,6 +8,8 @@ import { fmtRelative } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, DISABLED_PRIMARY } from './ui.jsx';
 import { useT } from '../lib/i18n.js';
 import { forgetEngager, linkEngagers, unlinkEngagers, dismissLinkGuess } from '../lib/api.js';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction } from '../lib/failureCopy.js';
 
 // HistoryPopover (spec 49 R12, §5.2): the accreted exchanges for one person, disclosed on
 // demand behind the HistoryChip. It is a READING surface first - the exchanges lead; the
@@ -135,6 +137,19 @@ function ExchangeRow({ ex, fallbackLane, t }) {
   );
 }
 
+// A failed write, as the plain sentence (humanizeAction's text) in the alert; the server's
+// raw line rides the "?" beside it. Shared by the forget confirm and the link actions.
+function ActionError({ error }) {
+  return (
+    <div className="flex items-start gap-1">
+      <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
+        <AlertCircle size={11} aria-hidden="true" /> {error.text}
+      </p>
+      <InfoTip label={error.raw} />
+    </div>
+  );
+}
+
 export default function HistoryPopover({ record, lane, handle, suggestions = [], links = [], onClose }) {
   const t = useT();
   const queryClient = useQueryClient();
@@ -181,7 +196,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
       invalidate();
       onClose?.();
     } catch (err) {
-      setError(err?.message || t('engager.forget.failed'));
+      setError(humanizeAction(err, t, { fallbackKey: 'engager.forget.failed' }));
     } finally {
       setBusy(false);
     }
@@ -195,7 +210,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
       await fn({ lane, handle }, { lane: oLane, handle: oHandle });
       invalidate();
     } catch (err) {
-      setError(err?.message || t('engager.forget.failed'));
+      setError(humanizeAction(err, t, { fallbackKey: 'engager.forget.failed' }));
     } finally {
       setBusy(false);
     }
@@ -296,17 +311,18 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
         </ul>
       ) : null}
 
+      {/* A failed link / un-link / dismiss says so here, under the rows it acted on (the forget
+          confirm shows its own below). */}
+      {error && !confirming ? <ActionError error={error} /> : null}
+
       {/* Overflow -> forget (destructive-ish, behind an inline confirm; S6). */}
       <div className="border-t border-zinc-900/5 pt-2 dark:border-white/10">
         {confirming ? (
           <div className="space-y-1.5">
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('engager.forget.explain')}</p>
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('engager.forget.noUndo')}</p>
-            {error ? (
-              <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-                <AlertCircle size={11} aria-hidden="true" /> {error}
-              </p>
-            ) : null}
+            {/* The plain sentence is the alert; the server's raw line rides the "?" beside it. */}
+            {error ? <ActionError error={error} /> : null}
             <div className="flex items-center justify-end gap-1.5">
               <button
                 type="button"
@@ -328,7 +344,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
         ) : overflowOpen ? (
           <button
             type="button"
-            onClick={() => setConfirming(true)}
+            onClick={() => { setError(null); setConfirming(true); }}
             className="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-red-300"
           >
             <Trash2 size={11} aria-hidden="true" /> {t('engager.forget.action')}

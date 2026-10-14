@@ -11,6 +11,8 @@ import { PLATFORM_META, INNER_SURFACE, EYEBROW, DISABLED_PRIMARY, FIELD_MULTILIN
 import { useLint, LintPanel } from './Composer.jsx';
 import HistoryChip from './HistoryChip.jsx';
 import { useT } from '../lib/i18n.js';
+import { humanizeAction } from '../lib/failureCopy.js';
+import InfoTip from './ui/InfoTip.jsx';
 
 // The inbound-engagement (inbox) thread panel (spec 02, Pattern P6; moderation is
 // spec 06). Rendered as a <Section> inside PostDetail's bodyLeft when the operator
@@ -80,6 +82,22 @@ const DEFAULT_REACT_EMOJI = '👍';
 // a per-row inline reply box, and (spec 06) a per-row moderation overflow listing
 // only the lane's supported actions. Optimistically-appended local replies render
 // with the same row (parentId set) so the operator sees their reply immediately.
+// An action or read failure is { text, raw }: one plain sentence (the caller's fallback,
+// or a connection sentence when the lane's answer says something specific), with the raw
+// engine or platform line behind the "?" only, never inline.
+const laneAlert = (err, t, fallbackKey, lane) => humanizeAction(err, t, { fallbackKey, lane: lane || null });
+function ActionError({ error, as: Tag = 'p' }) {
+  if (!error) return null;
+  return (
+    <span className="inline-flex items-start gap-1">
+      <Tag role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
+        <AlertCircle size={11} aria-hidden="true" /> {error.text}
+      </Tag>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </span>
+  );
+}
+
 function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, onReply, onModerate, onReact, replying, t }) {
   const [draft, setDraft] = useState('');
   const [open, setOpen] = useState(false);
@@ -111,7 +129,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
       setDraft('');
       setOpen(false);
     } catch (err) {
-      setError(err?.message || t('postDetail.comments.error'));
+      setError(laneAlert(err, t, 'reviews.reply.error', lane));
     }
   };
   // A suppressing action arrives with confirm:true (the inline confirm already cleared
@@ -127,8 +145,8 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
       setPendingAction(null);
     } catch (err) {
       setModError(err?.error === 'unsupported_action'
-        ? t('postDetail.comments.moderate.unsupported')
-        : (err?.message || t('postDetail.comments.moderate.error')));
+        ? { text: t('postDetail.comments.moderate.unsupported'), raw: null }
+        : laneAlert(err, t, 'postDetail.comments.moderate.error', lane));
     } finally {
       setModerating(false);
     }
@@ -146,7 +164,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
       await onReact(comment.commentId, reaction, wasActive, comment.author);
       setReactedAs(wasActive ? null : reaction);
     } catch (err) {
-      setReactError(err?.message || t('postDetail.comments.react.error'));
+      setReactError(laneAlert(err, t, 'postDetail.comments.react.error', lane));
     } finally {
       setReacting(false);
     }
@@ -191,11 +209,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
             className={`${FIELD_MULTILINE} w-full resize-y`}
           />
           <LintPanel lint={replyLint} />
-          {error ? (
-            <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-              <AlertCircle size={11} aria-hidden="true" /> {error}
-            </p>
-          ) : null}
+          <ActionError error={error} />
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -274,11 +288,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
               </button>
             );
           })() : null}
-          {reactError ? (
-            <span role="alert" className="inline-flex items-center gap-1 text-[11px] text-red-600 dark:text-red-300">
-              <AlertCircle size={11} aria-hidden="true" /> {reactError}
-            </span>
-          ) : null}
+          <ActionError error={reactError} as="span" />
         </div>
       )}
       {/* The overflow action list + an inline confirm step for the suppressing actions (spec 06). */}
@@ -327,11 +337,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
               })}
             </div>
           )}
-          {modError ? (
-            <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-              <AlertCircle size={11} aria-hidden="true" /> {modError}
-            </p>
-          ) : null}
+          <ActionError error={modError} />
         </div>
       ) : null}
       {/* The collapsed reaction picker (spec 24): the multi-reaction lanes expand their
@@ -427,6 +433,12 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
   const moderateActions = Array.isArray(data?.moderateActions) ? data.moderateActions : [];
   const reactActions = Array.isArray(data?.reactActions) ? data.reactActions : [];
   const items = [...(data?.items || []), ...sent];
+  // A failed lane read: one sentence, the engine's raw line and code behind the "?" only.
+  const readFailed = isError || (data && (data.ok === false || data.error));
+  const readRaw = readFailed ? [data?.message || data?.error, data?.code].filter((v) => typeof v === 'string' && v.trim()).join(' · ') : '';
+  const readAlert = readFailed
+    ? humanizeAction({ message: data?.message || data?.error, code: data?.code }, t, { fallbackKey: 'postDetail.comments.error', lane: data?.targetPlatform || data?.platform || null })
+    : null;
 
   return (
     <section className="space-y-1.5" aria-label={t('postDetail.section.comments')}>
@@ -438,13 +450,14 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
             <li key={i} className={`h-14 animate-pulse rounded-xl ${INNER_SURFACE}`} />
           ))}
         </ul>
-      ) : isError || (data && (data.ok === false || data.error)) ? (
-        <p role="alert" className={`flex flex-wrap items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs text-red-600 dark:text-red-300 ${INNER_SURFACE}`}>
-          <AlertCircle size={13} aria-hidden="true" />
-          {t('postDetail.comments.error')}
-          {(data?.message || data?.error) ? <span className="text-zinc-500 dark:text-zinc-400">{data.message || data.error}</span> : null}
-          {data?.code ? <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">{data.code}</span> : null}
-        </p>
+      ) : readFailed ? (
+        <div className={`flex items-start gap-1 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
+          <p role="alert" className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-300">
+            <AlertCircle size={13} aria-hidden="true" />
+            {readAlert.text}
+          </p>
+          <InfoTip label={readRaw && readRaw !== readAlert.text ? readRaw : null} />
+        </div>
       ) : data?.needsScope ? (
         <div className={`space-y-1 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
           <p className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">

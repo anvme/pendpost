@@ -32,6 +32,7 @@ vi.mock('../../lib/api.js', () => ({
   usePendpostHealth: () => ({ data: { ok: true, ready: false, setup }, isLoading: false, isError: false }),
   // WP6: Setup reads the radar capability table for the per-card scan switch
   useSignals: () => ({ data: undefined, isLoading: false }),
+  usePlans: () => ({ data: undefined }),
   useConfig: () => ({ data: { ok: true, rev: CONFIG_REV, identifiers: {}, posting: { locale: 'en', platforms: {}, radar: radarConfig }, secrets: {} }, isLoading: false }),
   useAccounts: () => ({ data: { meta: { paused: false, cadence: {} }, scheduler: { lastRun: null } } }),
   useActiveClient: () => ({ activeClient: { displayName: 'Acme' } }),
@@ -176,6 +177,40 @@ describe('Setup "Your agent" card', () => {
     expect(connectAgentMock).toHaveBeenCalledWith('sk-ant-oat01-pasted', 'claude-code');
   });
 
+  // The visible text of an element: the InfoTip's sr-only description (the raw line behind
+  // the "?") is not on screen, so it is stripped before asserting what the owner reads.
+  const visibleText = (el) => {
+    const c = el.cloneNode(true);
+    c.querySelectorAll('.sr-only').forEach((n) => n.remove());
+    return c.textContent;
+  };
+
+  it('a failed token save says one plain sentence; the raw server line only behind the "?"', async () => {
+    connectAgentMock.mockRejectedValueOnce(new Error('/api/agent/connect: HTTP 500 CLAUDE_CODE_OAUTH_TOKEN EADDRINUSE'));
+    const user = userEvent.setup();
+    renderSetup();
+    await openCard(user);
+    await user.type(screen.getByLabelText(/token/i), 'sk-ant-oat01-pasted');
+    await user.click(screen.getByRole('button', { name: /save/i }));
+    const alert = await within(card()).findByRole('alert');
+    expect(alert.textContent).toBe('Could not save the token.');
+    expect(visibleText(card())).not.toMatch(/HTTP 500|EADDRINUSE|CLAUDE_CODE_OAUTH_TOKEN/);
+    // The raw line lives only as the "?" trigger's description.
+    expect(within(card()).getByText(/HTTP 500/)).toHaveClass('sr-only');
+  });
+
+  it('a failed adopt says one plain sentence; the raw server line only behind the "?"', async () => {
+    adoptAgentMock.mockRejectedValueOnce(new Error('/api/agent/adopt: HTTP 409 NOSTR_PRIVATE_KEY'));
+    setup.agent = agentSetup({ adoptFrom: [{ id: 'northwind', displayName: 'northwind', provider: 'claude-code' }] });
+    const user = userEvent.setup();
+    renderSetup();
+    await openCard(user);
+    await user.click(within(card()).getByRole('button', { name: /use the same agent as northwind/i }));
+    const alert = await within(card()).findByRole('alert');
+    expect(alert.textContent).toBe('Could not copy the agent token.');
+    expect(visibleText(card())).not.toMatch(/HTTP 409|NOSTR_PRIVATE_KEY/);
+  });
+
   it('"check again" runs the real probe (S3) rather than trusting the stored token', async () => {
     const user = userEvent.setup();
     renderSetup();
@@ -185,7 +220,7 @@ describe('Setup "Your agent" card', () => {
     expect(recheckAgentMock).toHaveBeenCalled();
   });
 
-  it('surfaces the probe\'s own failure text instead of shrugging (S3/S6)', async () => {
+  it('names a failed probe in one plain sentence, the raw text only on the chip (S3/S6)', async () => {
     const user = userEvent.setup();
     setup.agent = agentSetup({
       connected: true,
@@ -194,8 +229,15 @@ describe('Setup "Your agent" card', () => {
     });
     renderSetup();
     await openCard(user);
-    expect(screen.getByRole('alert').textContent).toMatch(/Not logged in/);
-    expect(card().textContent).toMatch(/failed/i);
+    // One plain sentence inline; the CLI's raw text rides only the status chip tooltip.
+    expect(screen.getByRole('alert').textContent).toBe('Your agent failed the check. The exact message is in the status above.');
+    // Visible text only: the CLI's raw text may be the chip's (sr-only) description, never its
+    // name and never inline (judge final2).
+    const visible = card().cloneNode(true);
+    visible.querySelectorAll('.sr-only').forEach((n) => n.remove());
+    expect(visible.textContent).not.toMatch(/Not logged in/);
+    const chip = within(card()).getByRole('button', { name: /failed/i });
+    expect(chip).toHaveAccessibleDescription('Not logged in · Please run /login');
   });
 
   it('a connected-but-unproven agent is NOT presented as live: only a passing probe is', async () => {

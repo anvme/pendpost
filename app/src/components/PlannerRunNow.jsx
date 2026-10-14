@@ -20,9 +20,11 @@ import { useT } from '../lib/i18n.js';
 import { isDueNow } from '../lib/format.js';
 import PlannerRunNowDialog from './PlannerRunNowDialog.jsx';
 import { Tip } from './ui/Tooltip.jsx';
+import { TAP_TARGET } from './ui/recipes.js';
 
+// TAP_TARGET: a 44px hit box around the painted 32px button (icon-only below 2xl, 33px wide).
 const HEADER_BTN =
-  'flex h-8 shrink-0 items-center gap-1.5 rounded-xl bg-zinc-200/60 px-2.5 text-xs font-bold transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+  `${TAP_TARGET} flex h-8 shrink-0 items-center gap-1.5 rounded-xl bg-zinc-200/60 px-2.5 text-xs font-bold transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50`;
 
 // The 368 lives in pendpost_health.blockers[] as a free-form line (lib/writes.mjs pendpostHealth blockers push);
 // the stable marker is the "Meta action block" phrase. We surface the line verbatim
@@ -54,7 +56,8 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
   // Check-readiness affordance instead of a (disabled) Run-now.
   if (blocker368) {
     return (
-      <div className="flex items-center gap-2">
+      // gap-3: the two icon-only buttons below 2xl carry 44px boxes that clear each other at 12px.
+      <div className="flex shrink-0 items-center gap-3">
         <span className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300">
           <AlertCircle size={13} className="shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
           <span className="sr-only">{t('planner.runNow.blockedAria')}</span>
@@ -68,9 +71,9 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
           className={HEADER_BTN}
         >
           <Rocket size={13} aria-hidden="true" />
-          {/* Label collapses to icon-only below lg so the toolbar stays one line
-              (the sidebar eats ~256px, so the header is much narrower than the viewport). */}
-          <span className="hidden lg:inline">{t('planner.runNow.idle')}</span>
+          {/* Label collapses to icon-only below 2xl so the toolbar stays one line
+              (the sidebar eats ~256px; at 1280 the label ran under the Woche/Monat/Liste pill). */}
+          <span className="hidden 2xl:inline">{t('planner.runNow.idle')}</span>
         </button>
         <Tip label={t('planner.runNow.tip.checkReadiness')}>
           <button
@@ -80,7 +83,7 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
             className={HEADER_BTN}
           >
             <ListChecks size={13} aria-hidden="true" />
-            <span className="hidden lg:inline">{t('planner.runNow.checkReadiness')}</span>
+            <span className="hidden 2xl:inline">{t('planner.runNow.checkReadiness')}</span>
           </button>
         </Tip>
       </div>
@@ -92,7 +95,7 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
   // loop. It carries the live due-count badge (isDueNow over campaigns) so the
   // owner sees the exact scope - identical to the dialog's list - before opening.
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex shrink-0 items-center gap-2">
       <Tip label={t('planner.runNow.tip.run', { client, count: dueCount })}>
         <button
           type="button"
@@ -102,9 +105,9 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
           className={HEADER_BTN}
         >
           <Rocket size={13} aria-hidden="true" />
-          {/* Label collapses to icon-only below lg so the toolbar stays one line
-              (the sidebar eats ~256px, so the header is much narrower than the viewport). */}
-          <span className="hidden lg:inline">{t('planner.runNow.idle')}</span>
+          {/* Label collapses to icon-only below 2xl so the toolbar stays one line
+              (the sidebar eats ~256px; at 1280 the label ran under the Woche/Monat/Liste pill). */}
+          <span className="hidden 2xl:inline">{t('planner.runNow.idle')}</span>
         </button>
       </Tip>
       {open ? (

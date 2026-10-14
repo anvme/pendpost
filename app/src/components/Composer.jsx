@@ -6,13 +6,15 @@ import { useAssetUpload } from '../lib/useAssetUpload.js';
 import { useT, useLocale } from '../lib/i18n.js';
 import { splitTweetThread } from '../lib/thread.js';
 import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia } from '../lib/format.js';
-import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, FIELD, FIELD_MULTILINE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
+import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, FIELD, FIELD_MULTILINE, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY, showsLinkedinCard } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { useConfirm } from './ui/confirm.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction } from '../lib/failureCopy.js';
 
 // Content-driven textarea height (mirrors PostDetail's ContentField, punch-list
 // 2.5): grow from the content's newline count and a wrapped-line estimate
@@ -96,7 +98,7 @@ export function LintPanel({ lint }) {
   const findings = (lint.findings || []).filter((f) => f.rule !== 'em-dash');
   if (!findings.length) {
     return (
-      <p className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-300">
+      <p className="flex items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-300">
         <CheckCircle2 size={12} aria-hidden="true" /> {t('composer.lint.clean')}
       </p>
     );
@@ -1318,7 +1320,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [hashtagsMode, setHashtagsMode] = useState(isEdit && Array.isArray(post.hashtags) ? 'custom' : 'global');
   const [hashtags, setHashtags] = useState(isEdit && Array.isArray(post.hashtags) ? post.hashtags.join(' ') : '');
   const [busy, setBusy] = useState(false);
+  // { text, raw }: the plain sentence is the alert, a server line rides the "?" (raw).
   const [error, setError] = useState(null);
+  const say = (text) => setError({ text, raw: null });
   const [showPreview, setShowPreview] = useState(false);
   const idRef = useRef(null);
   const xReplyToRef = useRef(null);
@@ -1471,7 +1475,6 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     redditText: (isEdit && post.redditText) || redditText,
     pinDescription: (isEdit && post.pinDescription) || pinDescription,
   }), [platforms, isEdit, post, xCaption, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinDescription]);
-  const isLinkedinArticle = platforms.includes('linkedin') && type === 'text';
   // Article authoring (wave 2): the long-form fields apply whenever a blog lane
   // is targeted - WordPress and Ghost publish title + markdown body (falling
   // back to the caption), excerpt, hero image and tags.
@@ -1486,12 +1489,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // CarouselPicker (spec 05) - hide the single picker here. A nostr-longform article is
   // media-less too (spec 18: the header image is a URL, not a local render).
   const needsMedia = type !== 'text' && type !== 'poll' && type !== 'carousel' && type !== 'nostr-longform';
-  // Nothing to preview: a pure text/poll/carousel/nostr-longform post with no link and
-  // no image, targeting neither a blog lane nor LinkedIn, renders no single-media card
-  // (PostPreview returns null). Mirror that here so we hide the "Vorschau" label +
+  // Nothing to preview: PostPreview returns null for a text post that is neither a blog
+  // article nor a LinkedIn post with a link, and for a poll/carousel/nostr-longform post
+  // with no link and no image. Mirror that here so we hide the "Vorschau" label +
   // toggle rather than leave an empty labelled region dangling over nothing (a carousel
   // previews its slides inline in the CarouselPicker, not the single-media card).
-  const nothingToPreview = !isLinkedinArticle && !isArticle && (type === 'text' || type === 'poll' || type === 'carousel' || type === 'nostr-longform') && !link && !image;
+  const nothingToPreview = !isArticle && (type === 'text'
+    ? !showsLinkedinCard({ platforms, type, link })
+    : (type === 'poll' || type === 'carousel' || type === 'nostr-longform') && !link && !image);
   const showFirstComment = rel.firstComment;
   // FR4: interactive-story authoring applies only to an Instagram story - there is
   // no story surface to attach stickers to for any other type or platform.
@@ -1802,7 +1807,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const save = async () => {
     setError(null);
     if (!isEdit && !/^[a-zA-Z0-9_-]+$/.test(id)) {
-      setError(t('composer.error.idFormat'));
+      say(t('composer.error.idFormat'));
       idRef.current?.focus();
       return;
     }
@@ -1810,12 +1815,12 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     // ID_RE) and never the post itself - a self-thread can never publish.
     const xReplyToClean = xReplyTo.trim();
     if (xReplyToClean && (!/^[a-zA-Z0-9_-]+$/.test(xReplyToClean) || xReplyToClean === (isEdit ? post.id : id))) {
-      setError(t('composer.error.xReplyToFormat'));
+      say(t('composer.error.xReplyToFormat'));
       xReplyToRef.current?.focus();
       return;
     }
     if (!platforms.length) {
-      setError(t('composer.error.noPlatform'));
+      say(t('composer.error.noPlatform'));
       // The platform chips carry aria-pressed; the select-all control does not, so this
       // targets the first actual platform toggle, not the select-all button beside it.
       platformsFieldsetRef.current?.querySelector('button[aria-pressed]')?.focus();
@@ -1825,7 +1830,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     // create a post with no campaign rather than let createPost('', ...) fail
     // silently. (Edit mode always carries the post's own campaign.)
     if (!isEdit && !campaign) {
-      setError(t('composer.error.noCampaign'));
+      say(t('composer.error.noCampaign'));
       campaignSelectRef.current?.focus();
       return;
     }
@@ -1833,7 +1838,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     // may not be saved without one (mirrors the server createPost gate). Covers
     // create AND edit; both branches send scheduledAt: scheduledIso below.
     if (!scheduledIso) {
-      setError(t('composer.error.noSchedule'));
+      say(t('composer.error.noSchedule'));
       scheduleFieldRef.current?.querySelector('button')?.focus();
       return;
     }
@@ -1995,11 +2000,10 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
       onSaved?.(campaign, isEdit ? post.id : id, saveRes?.humanizer);
       onClose();
     } catch (err) {
-      setError(
-        err.code === 'stale_write'
-          ? t('composer.error.staleWrite')
-          : err.message,
-      );
+      // A stale write keeps its own sentence; anything else is one plain sentence with the
+      // server's own line behind the "?" (humanizeAction), never inline.
+      if (err?.code === 'stale_write') say(t('composer.error.staleWrite'));
+      else setError(humanizeAction(err, t, { fallbackKey: 'error.action' }));
     } finally {
       setBusy(false);
     }
@@ -2821,11 +2825,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
               </button>
               {showPreview ? (
                 <div id="composer-preview-mobile" className="mt-2 space-y-2">
-                  {isLinkedinArticle ? (
-                    <LinkCardPreview image={image} title={title} link={link} />
-                  ) : (
-                    <PostPreview post={previewPost} />
-                  )}
+                  <PostPreview post={previewPost} />
                 </div>
               ) : null}
             </div>
@@ -2839,7 +2839,10 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           ) : null}
 
           {error ? (
-            <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p>
+            <div className="flex items-start gap-1 rounded-xl bg-red-500/10 p-3">
+              <p role="alert" className="text-xs text-red-600 dark:text-red-300">{error.text}</p>
+              <InfoTip label={error.raw} />
+            </div>
           ) : null}
 
           <div className="flex items-center justify-end gap-2 pt-1">
@@ -2857,11 +2860,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
         <aside className="hidden lg:block">
           <div className="sticky top-0 space-y-2">
             {nothingToPreview ? null : <p className={EYEBROW}>{t('composer.preview')}</p>}
-            {isLinkedinArticle ? (
-              <LinkCardPreview image={image} title={title} link={link} />
-            ) : (
-              <PostPreview post={previewPost} />
-            )}
+            <PostPreview post={previewPost} />
           </div>
         </aside>
       </div>

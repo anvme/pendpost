@@ -99,6 +99,29 @@ describe('FirstRunEmptyState', () => {
     expect(screen.queryByText(/a-zA-Z0-9_-/)).not.toBeInTheDocument();
   });
 
+  // The raw-error sweep: any other create failure is one plain sentence; the server's English
+  // line never renders inline, it rides the house "?" beside the alert.
+  it('a message-less create failure still shows the plain sentence', async () => {
+    const user = userEvent.setup();
+    createCampaign.mockRejectedValueOnce(new Error());
+    renderEmpty();
+    await user.type(screen.getByLabelText(/campaign id/i), 'spring-launch');
+    await user.click(screen.getByRole('button', { name: /create campaign/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not create the campaign');
+  });
+
+  it('an English server error is not inline; it is the "?" description', async () => {
+    const user = userEvent.setup();
+    createCampaign.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderEmpty();
+    await user.type(screen.getByLabelText(/campaign id/i), 'spring-launch');
+    await user.click(screen.getByRole('button', { name: /create campaign/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not create the campaign');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
   it('associates the validation error with the input for screen readers', async () => {
     const user = userEvent.setup();
     renderEmpty();

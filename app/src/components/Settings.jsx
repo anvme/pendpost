@@ -10,7 +10,26 @@ import { Tip } from './ui/Tooltip.jsx';
 import { Select } from './ui/Select.jsx';
 import RadarSearches, { RadarGeo, RadarBrand } from './RadarSearches.jsx';
 import AutonomyLedger from './AutonomyLedger.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction } from '../lib/failureCopy.js';
 
+// A failed save's alert, the Setup anatomy: the plain sentence ({ text, raw }) is the alert and
+// the server's raw line rides the house "?" beside it, never inline and never inside the alert.
+// `box` is the surface's own frame (the page banner or a bare field line).
+function ActionError({ error, box = '', className = 'text-[11px] font-bold text-red-600 dark:text-red-300' }) {
+  if (!error) return null;
+  return (
+    <div className={`flex items-start gap-1 ${box}`}>
+      <p role="alert" className={className}>{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
+// A config write the server refused: the page banner's sentence is the house save failure.
+const saveAlert = (err, t) => humanizeAction(err, t, { fallbackKey: 'setup.writeError' });
+// A field's own validation line ("defaultTimezone must be ..."): the field's plain sentence,
+// the server's English rule behind the "?".
+const fieldAlert = (err, t, key) => ({ text: t(key), raw: err.message.trim() });
 
 // The operator's own zone, detected once. Backs the pinned "use this device's zone"
 // option, and is the effective selection when the config has no explicit zone yet.
@@ -119,7 +138,7 @@ export default function Settings({ focus = null, onNavigate }) {
     setError(null);
     saveConfig(data.rev, { posting: { locale: tag } })
       .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
-      .catch((err) => { setLanguage(prior); setError(err.message); });
+      .catch((err) => { setLanguage(prior); setError(saveAlert(err, t)); });
   };
 
   // The time zone saves on change, like the language + time-format selects (no manual
@@ -149,8 +168,8 @@ export default function Settings({ focus = null, onNavigate }) {
       }
       // A "defaultTimezone ..." validation message lands inline under the field;
       // anything else goes to the banner.
-      if ((err.message || '').startsWith('defaultTimezone ')) setTzError(err.message);
-      else setError(err.message);
+      if ((err.message || '').startsWith('defaultTimezone ')) setTzError(fieldAlert(err, t, 'clientForm.error.timezoneInvalid'));
+      else setError(saveAlert(err, t));
     }
   };
 
@@ -173,8 +192,8 @@ export default function Settings({ focus = null, onNavigate }) {
         queryClient.invalidateQueries({ queryKey: ['config'] });
         return;
       }
-      if ((err.message || '').startsWith('publicMediaBaseUrl ')) setMediaBaseError(err.message);
-      else setError(err.message);
+      if ((err.message || '').startsWith('publicMediaBaseUrl ')) setMediaBaseError(fieldAlert(err, t, 'postDetail.addExternalUrl.invalid'));
+      else setError(saveAlert(err, t));
     }
   };
 
@@ -243,7 +262,7 @@ export default function Settings({ focus = null, onNavigate }) {
                       </optgroup>
                     ))}
                   </Select>
-                  {tzError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{tzError}</p> : null}
+                  <ActionError error={tzError} />
                 </div>
 
                 {/* Spec 39 §4.0: the public media mirror. One row: the base URL of the
@@ -261,7 +280,7 @@ export default function Settings({ focus = null, onNavigate }) {
                     className={`${mediaBaseError ? FIELD_ERR : FIELD} w-full`}
                     aria-invalid={mediaBaseError ? 'true' : undefined}
                   />
-                  {mediaBaseError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{mediaBaseError}</p> : null}
+                  <ActionError error={mediaBaseError} />
                 </div>
 
               </section>
@@ -332,7 +351,9 @@ export default function Settings({ focus = null, onNavigate }) {
               {/* Radar searches: the per-project "what Radar looks for" editor, moved off the Radar
                   page (feed-first redesign) to live next to the Radar autonomy policy. */}
               <div className="space-y-6">
-                <RadarSearches focus={focus === 'radar'} onNavigate={onNavigate} />
+                {/* 'radar' scrolls here; 'radar:<queryId>' (a signal's query chip, the By-search
+                    Tune link) also opens that search's editor. */}
+                <RadarSearches focus={focus === 'radar' || String(focus || '').startsWith('radar:')} focusQueryId={String(focus || '').startsWith('radar:') ? String(focus).slice(6) : null} onNavigate={onNavigate} />
                 {/* Brand fact sheet: the product identity the Radar agent judges every thread
                     against (scan + draft). Sits with the searches - both answer "who are we and
                     what are we looking for". Empty => the agent falls back to pendpost's default. */}
@@ -362,7 +383,7 @@ export default function Settings({ focus = null, onNavigate }) {
             </div>
           ) : null}
 
-          {error ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p> : null}
+          <ActionError error={error} box="rounded-xl bg-red-500/10 p-3" className="text-xs text-red-600 dark:text-red-300" />
         </>
       )}
     </div>

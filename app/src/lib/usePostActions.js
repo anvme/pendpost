@@ -7,6 +7,7 @@ import { approvePost, rejectPost, verifyPost, deletePost, unschedulePost, runPub
 import { patchPlanRemove } from './useReschedule.js';
 import { canApprovePost, canRejectPost, canParkPost, canVerifyPost, canPublishNowPost, isHeldRetry, postHasPublishEvidence } from './postActions.js';
 import { publishRunOutcome } from './format.js';
+import { humanizeAction, humanizeFailure } from './failureCopy.js';
 
 // The overview's post-action set - the SAME actions PostDetail offers, made reachable
 // from a card/row's three-dots menu (ui/RowMenu) so an operator can act without opening
@@ -26,7 +27,9 @@ import { publishRunOutcome } from './format.js';
 // lane-halt for resume), and the handlers mirror PostDetail.onPublishNow +
 // PlannerRunNowDialog.runOne (clear a hold with a same-time reschedule first, run the
 // per-post publish-due, then branch on publishRunOutcome) and PostDetail's lane-resume
-// (honest stillDepleted toast). Failures surface as a toast instead of an in-drawer banner.
+// (honest stillDepleted toast). Failures surface as a toast instead of an in-drawer banner:
+// one plain sentence via the drawer's own mapper (humanizeAction, 'error.action'), the raw
+// server/engine line only behind the toast's "?" (AppToast { text, raw }).
 //
 // Deliberately NOT here: mark-posted and the lane-specific deep actions (playlist, zap,
 // pin, discord event, edit-published) - those need the detail context and stay in the
@@ -52,7 +55,7 @@ export function usePostActions(post, { onEdit } = {}) {
     try {
       await approvePost(post.campaign, post.id, undefined, clientId);
     } catch (err) {
-      showToast({ kind: 'error', text: err?.message || t('postDetail.error.generic') });
+      showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {
       refresh();
     }
@@ -70,15 +73,16 @@ export function usePostActions(post, { onEdit } = {}) {
     try {
       await rejectPost(post.campaign, post.id, note.trim() || undefined, clientId);
     } catch (err) {
-      showToast({ kind: 'error', text: err?.message || t('postDetail.error.generic') });
+      showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {
       refresh();
     }
   };
 
   // Park mirrors Planner's former usePark: escalate a native-object cancel to an explicit
-  // confirm, else surface the failure. Consolidated here so the row and the (removed) local
-  // hook share one implementation.
+  // confirm, else surface the failure. The confirm says the Studio's own sentence (as
+  // PostDetail does): the engine's needs_confirm message is an English line for agents.
+  // Consolidated here so the row and the (removed) local hook share one implementation.
   const park = async () => {
     try {
       await (clientId ? unschedulePost(post.campaign, post.id, false, clientId) : unschedulePost(post.campaign, post.id));
@@ -86,14 +90,14 @@ export function usePostActions(post, { onEdit } = {}) {
       if (err?.code === 'needs_confirm') {
         const ok = await confirm({
           title: t('postDetail.confirm.title'),
-          body: err.message || t('postDetail.action.parkTip'),
+          body: t('postDetail.park.confirmBody'),
           confirmLabel: t('postDetail.confirm.continue'),
           danger: true,
         });
         if (!ok) { refresh(); return; }
         await (clientId ? unschedulePost(post.campaign, post.id, true, clientId) : unschedulePost(post.campaign, post.id, true));
       } else {
-        showToast({ kind: 'error', text: err?.message || t('reschedule.failed.body') });
+        showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
       }
     } finally {
       refresh();
@@ -104,7 +108,7 @@ export function usePostActions(post, { onEdit } = {}) {
     try {
       await verifyPost(post.campaign, post.id);
     } catch (err) {
-      showToast({ kind: 'error', text: err?.message || t('postDetail.error.generic') });
+      showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {
       refresh();
     }
@@ -132,13 +136,13 @@ export function usePostActions(post, { onEdit } = {}) {
       showToast({ kind: 'success', text: t('postDetail.delete.toastSuccess') });
     } catch (err) {
       queryClient.setQueryData(['plans'], prev);
-      const detail = err?.message || t('postDetail.error.generic');
-      showToast({
-        kind: 'error',
-        text: err?.code === 'engine_failure'
-          ? t('postDetail.delete.toastError.cancelFailed', { detail })
-          : t('postDetail.delete.toastError', { message: detail }),
-      });
+      // Same mapping as PostDetail.onDelete: engine_failure (the platform-side cancel failed)
+      // has its own sentence, anything else goes through the shared mapper. The engine's own
+      // words ride the toast's "?" only (AppToast { text, raw }).
+      const alert = err?.code === 'engine_failure'
+        ? { text: t('postDetail.delete.toastError.cancelFailed'), raw: err?.message || null }
+        : humanizeAction(err, t, { fallbackKey: 'postDetail.delete.toastError' });
+      showToast({ kind: 'error', text: alert });
     } finally {
       refresh();
     }
@@ -174,7 +178,7 @@ export function usePostActions(post, { onEdit } = {}) {
           if (err?.code !== 'needs_confirm') throw err;
           const ok2 = await confirm({
             title: t('postDetail.confirm.title'),
-            body: err.message || t('postDetail.action.parkTip'),
+            body: t('reschedule.confirm.body'),
             confirmLabel: t('postDetail.confirm.continue'),
             danger: true,
           });
@@ -183,26 +187,33 @@ export function usePostActions(post, { onEdit } = {}) {
         }
       }
       const res = await runPublishDue({ campaign: post.campaign, postId: post.id, clientId });
-      const { rows, fired, held, halted, reason } = publishRunOutcome(res, post.id);
+      const { rows, fired, held, halted, cloudWait, failure } = publishRunOutcome(res, post.id);
       if (fired) {
         showToast({ kind: 'success', text: t('postActions.publishNow.toastSuccess') });
+      } else if (cloudWait && !failure) {
+        // The fail-closed cloud hold: the cloud already has this post and cannot answer
+        // the publish claim, so nothing goes out locally until it answers.
+        showToast({ kind: 'error', text: t('postDetail.publishNow.cloudClaimWait') });
       } else if (held) {
         // The cloud owns this lane inside its handoff grace: nothing failed, it just cannot
         // fire locally yet.
         showToast({ kind: 'error', text: t('postDetail.publishNow.cloudHeld') });
-      } else if (halted && !reason) {
+      } else if (halted && !failure) {
         // Lane paused by an account-level breaker (X 402 credits) and dropped before
         // dispatch - point at the resume control instead of blaming the scheduler.
         showToast({ kind: 'error', text: t('postDetail.publishNow.laneHalted') });
-      } else if (reason) {
-        showToast({ kind: 'error', text: t('postDetail.publishNow.failedReason', { reason }) });
+      } else if (failure) {
+        // The lane's own words are English engine text: the sentence says it plainly
+        // (humanizeFailure, as PostDetail.onPublishNow) and the raw line rides the "?".
+        const plain = humanizeFailure(failure, t);
+        showToast({ kind: 'error', text: { text: t('postDetail.publishNow.failedReason', { reason: plain.text }), raw: plain.raw } });
       } else if (rows.length) {
         showToast({ kind: 'error', text: t('postDetail.publishNow.laneFailed', { lane: rows[0].lane }) });
       } else {
         showToast({ kind: 'error', text: t(heldRetry ? 'postDetail.publishNow.nothingRanHeld' : 'postDetail.publishNow.nothingRan') });
       }
     } catch (err) {
-      showToast({ kind: 'error', text: err?.message || t('postDetail.error.generic') });
+      showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {
       refreshSoon();
     }
@@ -219,7 +230,7 @@ export function usePostActions(post, { onEdit } = {}) {
         ? { kind: 'error', text: t('postDetail.resume.stillDepleted') }
         : { kind: 'success', text: t('postActions.resume.toastSuccess') });
     } catch (err) {
-      showToast({ kind: 'error', text: err?.message || t('postDetail.error.generic') });
+      showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {
       queryClient.invalidateQueries({ queryKey: ['plans'] });
       queryClient.invalidateQueries({ queryKey: ['health'] });

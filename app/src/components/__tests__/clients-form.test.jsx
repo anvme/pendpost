@@ -12,6 +12,7 @@ import { ConfirmProvider } from '../ui/confirm.jsx';
 const createClient = vi.fn(() => Promise.resolve({ ok: true }));
 
 vi.mock('../../lib/api.js', () => ({
+  usePlansAll: (clients) => (clients || []).map(() => ({ data: undefined, isLoading: true })),
   useClients: () => ({
     data: {
       activeClientId: 'acme',

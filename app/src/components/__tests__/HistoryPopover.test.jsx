@@ -152,3 +152,63 @@ describe('HistoryPopover', () => {
     expect(forgetMock).toHaveBeenCalledWith('mastodon', 'jane');
   });
 });
+
+// The raw-error sweep: a failed forget is one plain sentence; the server's English line never
+// renders inline, it rides the house "?" beside the alert.
+describe('HistoryPopover forget failures speak a plain sentence', () => {
+  beforeEach(() => { forgetMock.mockReset(); });
+  const openConfirmAndForget = async (user) => {
+    renderPopover({ record: { lane: 'mastodon', handle: 'jane', exchangeCount: 2, exchanges: exchanges(2) } });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    await user.click(screen.getByRole('button', { name: 'forget this person' }));
+    await user.click(screen.getByRole('button', { name: 'forget' }));
+  };
+
+  it('a message-less failure still shows the plain sentence', async () => {
+    forgetMock.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    await openConfirmAndForget(user);
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not be saved');
+  });
+
+  it('an English server line is not inline; it is the "?" description', async () => {
+    forgetMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    await openConfirmAndForget(user);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('could not be saved');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+});
+
+// Tail2 U4 (phase 3): a failed link / un-link / dismiss used to fail silently, because the
+// error rendered only inside the forget-confirm branch. It now says the same plain sentence,
+// and the server's English line rides the "?".
+describe('HistoryPopover link failures speak a plain sentence', () => {
+  const record = { lane: 'reddit', handle: 'jane', exchangeCount: 2, exchanges: exchanges(2) };
+  beforeEach(() => { linkMock.mockReset(); unlinkMock.mockReset(); dismissMock.mockReset(); });
+
+  it.each([
+    ['yes, same person', () => linkMock, { suggestions: [{ otherLane: 'mastodon', otherHandle: 'jane' }] }],
+    ['ignore', () => dismissMock, { suggestions: [{ otherLane: 'mastodon', otherHandle: 'jane' }] }],
+    ['remove link', () => unlinkMock, { links: [{ otherLane: 'mastodon', otherHandle: 'jane' }] }],
+  ])('a failed "%s" shows the plain sentence, the server line is the "?" description', async (name, mock, props) => {
+    mock().mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderPopover({ record, lane: 'reddit', ...props });
+    await user.click(screen.getByRole('button', { name }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('could not be saved');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a message-less link failure still shows the plain sentence', async () => {
+    linkMock.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderPopover({ record, lane: 'reddit', suggestions: [{ otherLane: 'mastodon', otherHandle: 'jane' }] });
+    await user.click(screen.getByRole('button', { name: 'yes, same person' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not be saved');
+  });
+});

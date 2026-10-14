@@ -58,4 +58,16 @@ describe('Freigaben bulk action bar position', () => {
     // i.e. the bulk bar precedes the list in the document.
     expect(selected.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
+
+  // D12 (phase 3): the bulk Reject is the same reversible verdict as the card's, so it wears
+  // the same quiet neutral look, never red.
+  it('the bulk Reject reads quiet neutral, not red', async () => {
+    const user = userEvent.setup();
+    renderFreigaben([post]);
+    await user.click(screen.getByRole('checkbox', { name: /select post/i }));
+    await screen.findByText(/1 selected/i);
+    for (const reject of screen.getAllByRole('button', { name: 'Reject' })) {
+      expect(reject.className).not.toMatch(/red-/);
+    }
+  });
 });

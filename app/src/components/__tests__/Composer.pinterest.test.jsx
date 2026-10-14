@@ -97,7 +97,7 @@ describe('Composer — Pinterest board-section picker (spec 17)', () => {
   it('shows the "sections unavailable" affordance on a scope-absent read (P9)', () => {
     usePinterestBoardSections.mockReturnValue({ data: { ok: false, error: 'needs_scope', items: [] }, isLoading: false });
     renderComposer(pinterestPost());
-    expect(screen.getByText('Sections unavailable - reconnect Pinterest')).toBeInTheDocument();
+    expect(screen.getByText('Sections unavailable: reconnect Pinterest')).toBeInTheDocument();
     // Publishing still works without a section - the select is simply absent, not a blocker.
     expect(screen.queryByRole('combobox', { name: 'Board section (Pinterest)' })).not.toBeInTheDocument();
   });
@@ -113,12 +113,12 @@ describe('Composer — Pinterest board-section picker (spec 17)', () => {
 
   it('shows the video-pin cover hint for a type=video post', () => {
     renderComposer(pinterestPost({ type: 'video' }));
-    expect(screen.getByText('A video pin needs a public cover - set Image URL (imageUrl) as the poster.')).toBeInTheDocument();
+    expect(screen.getByText('A video pin needs a public cover: set Image URL (imageUrl) as the poster.')).toBeInTheDocument();
   });
 
   it('does NOT show the cover hint for a non-video pinterest post', () => {
     renderComposer(pinterestPost({ type: 'image', media: { file: null, exists: false, url: null, cover: null, path: null, items: [] } }));
-    expect(screen.queryByText('A video pin needs a public cover - set Image URL (imageUrl) as the poster.')).not.toBeInTheDocument();
+    expect(screen.queryByText('A video pin needs a public cover: set Image URL (imageUrl) as the poster.')).not.toBeInTheDocument();
   });
 
   it('has no axe violations with the pinterest fields rendered', async () => {

@@ -160,16 +160,30 @@ describe('ClientSwitcher', () => {
     await waitFor(() => expect(setActive).toHaveBeenCalledWith('default'));
   });
 
-  it('surfaces the server error detail on a failed switch, not only the generic string', async () => {
+  it('keeps the server error detail behind the "?", never inline beside the plain sentence', async () => {
     setActive.mockRejectedValueOnce(new Error('registry locked by another process'));
     const user = userEvent.setup();
     renderSwitcher();
     await user.click(screen.getByRole('button', { name: /switch active project/i }));
     await user.click(await screen.findByRole('button', { name: /globex inc/i }));
     const alert = await screen.findByRole('alert');
-    // The server's actionable detail is visible, alongside the generic anchor.
-    expect(alert.textContent).toMatch(/registry locked by another process/);
+    // The plain sentence is the alert and the popover line; the server's English line is
+    // only the "?" description.
     expect(alert.textContent).toMatch(/still on the previous project/i);
+    expect(alert.textContent).not.toMatch(/registry locked/);
+    const line = screen.getByText(/could not switch to globex inc/i, { selector: 'span:not(.sr-only)' });
+    expect(line.textContent).not.toMatch(/registry locked/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('registry locked by another process');
+  });
+
+  it('an unreadable registry names the plain cause, the parser line rides the "?"', () => {
+    clientsState = { activeClientId: null, error: { message: 'Unexpected token } in JSON at position 42' }, clients: [] };
+    renderSwitcher();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Project registry unreadable');
+    expect(alert).toHaveTextContent('Could not read data/clients.json');
+    expect(alert).not.toHaveTextContent(/Unexpected token/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('Unexpected token } in JSON at position 42');
   });
 
   it('falls back to the generic failure string when the server sends no detail', async () => {

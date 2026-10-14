@@ -58,8 +58,8 @@ describe('Freigaben reddit warmth advisory (spec 37, reversed)', () => {
     const { container } = renderFreigaben([promoPost]);
     // The inline "Heads-up" advisory marker (IconBadge) is present.
     expect(screen.getByText('Heads-up')).toBeInTheDocument();
-    // The badge's accessible name carries the localized promo advisory.
-    expect(screen.getByRole('button', { name: /reads as promotional/i })).toBeInTheDocument();
+    // The badge is named by its visible word and DESCRIBED by the localized promo advisory.
+    expect(screen.getByRole('button', { name: 'Heads-up' })).toHaveAccessibleDescription(/reads as promotional/i);
     // The approve action is unchanged (approving auto-publishes it). Exact name, since the
     // advisory tooltip text itself contains the word "approve".
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();

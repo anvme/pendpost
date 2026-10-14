@@ -172,8 +172,54 @@ describe('PlannerRunNow', () => {
     await screen.findByRole('dialog');
     await user.click(runBtn());
 
-    expect(await screen.findByText(/instagram upload rejected/i)).toBeInTheDocument();
+    // The lane's failure says a plain sentence naming the lane; the engine's English line
+    // rides the "?" only, never the summary.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('0 published, 1 failed: a (Instagram did not accept the post.)');
+    expect(alert).not.toHaveTextContent(/upload rejected/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('a: instagram upload rejected: no public URL');
     expect(screen.queryByText(/paused because the credits are used up/i)).not.toBeInTheDocument();
+  });
+
+  it('a cloud_claim_wait marker says the cloud already has the post, never the 20-minute backstop promise', async () => {
+    const user = userEvent.setup();
+    // The fail-closed hold: the cloud has the post and cannot answer the publish claim, so
+    // nothing goes out locally until it answers. The cloud_held copy would be false here.
+    runPublishDue.mockResolvedValueOnce({ ok: true, ran: [
+      { campaign: 'c', postId: 'a', lane: 'meta', ok: false, errorCode: 'cloud_claim_wait', errorMessage: 'the cloud already has this post' },
+    ] });
+    renderRunNow({ pendpostHealth: HEALTHY, campaigns: campaignsWith(duePost('a')) });
+    await openDialog(user);
+    await screen.findByRole('dialog');
+    await user.click(runBtn());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/won't publish it from here until the cloud answers/i);
+    expect(alert).not.toHaveTextContent(/20 minutes/);
+  });
+
+  it('a message-less failure still names the post in the plain summary', async () => {
+    const user = userEvent.setup();
+    runPublishDue.mockRejectedValueOnce(new Error());
+    renderRunNow({ pendpostHealth: HEALTHY, campaigns: campaignsWith(duePost('a')) });
+    await openDialog(user);
+    await screen.findByRole('dialog');
+    await user.click(runBtn());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('0 published, 1 failed: a');
+    expect(alert).not.toHaveTextContent(/Error/);
+  });
+
+  it('an English server error is not in the summary; it rides the "?" only', async () => {
+    const user = userEvent.setup();
+    runPublishDue.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    renderRunNow({ pendpostHealth: HEALTHY, campaigns: campaignsWith(duePost('a')) });
+    await openDialog(user);
+    await screen.findByRole('dialog');
+    await user.click(runBtn());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('0 published, 1 failed: a');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('a: HTTP 500 internal');
   });
 
   it('in_flight (HTTP 423) stops with a friendly message and no auto-retry', async () => {
@@ -202,7 +248,11 @@ describe('PlannerRunNow', () => {
     await screen.findByRole('dialog');
     await user.click(runBtn());
 
-    // The server escalation confirm appears; continuing retries the same post.
+    // The server escalation confirm appears (the Studio's own sentence, never the engine
+    // line); continuing retries the same post.
+    const confirmDialog = await screen.findByRole('dialog', { name: /confirm publish run/i });
+    expect(confirmDialog).toHaveTextContent('The server needs an explicit confirmation to run the publish. Continue?');
+    expect(confirmDialog).not.toHaveTextContent(/confirmation required/);
     await user.click(await screen.findByRole('button', { name: /continue/i }));
     await waitFor(() => expect(runPublishDue).toHaveBeenCalledTimes(2));
   });

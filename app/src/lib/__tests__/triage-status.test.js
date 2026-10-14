@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { needsAttention, postStatusKey, postDot, isLate, matchesFilters, STATUS_PILL_META, getCardAccent, setCardAccent } from '../format.js';
-
-// The month dot is derived from the SAME collapsed bucket as the card pill, so the
-// two surfaces can never disagree on a post's status.
+import { needsAttention, postStatusKey, isLate, matchesFilters, STATUS_PILL_META, getCardAccent, setCardAccent } from '../format.js';
 
 // Triage-first: ONE collapsed status drives the Planner card. needsAttention is the
 // single predicate the card accent + the month dot share, so the two surfaces can
@@ -91,38 +88,6 @@ describe('isLate + the overdue filter (count and list can never disagree)', () =
     // Attention buckets carry an accent bar; settled buckets never do.
     for (const key of ['draft', 'pending', 'rejected', 'overdue']) expect(STATUS_PILL_META[key].bar).toBeTruthy();
     for (const key of ['scheduled', 'posted', 'parked']) expect(STATUS_PILL_META[key].bar).toBe('');
-  });
-});
-
-// The month dot is the SAME bucket color as the card pill - never a separate
-// precedence. The old overdue-first dot painted a draft-that-is-also-past-due red
-// while the card read it as a quiet "draft"; now both agree.
-describe('postDot agrees with the card pill (one bucket, one color)', () => {
-  it('always equals the bucket dot in STATUS_PILL_META', () => {
-    const cases = [
-      { approval: 'rejected', derivedState: 'waiting-due' },
-      { approval: 'approved', derivedState: 'overdue' },
-      { approval: 'draft', derivedState: 'overdue' }, // draft wins -> NOT the overdue red
-      { approval: 'approved', derivedState: 'waiting-due' },
-      { approval: 'approved', derivedState: 'posted' },
-      { approval: 'approved', derivedState: 'parked' },
-    ];
-    for (const p of cases) expect(postDot(p)).toBe(STATUS_PILL_META[postStatusKey(p)].dot);
-  });
-
-  it('paints rejected deep-red and approved-overdue light-red, but a draft-that-is-past-due stays the draft grey', () => {
-    // Staircase: rejected is the DEEP-red terminus (bg-red-600); a halted/overdue post
-    // is the softer light-red (bg-rose-400) - a failure pendpost can retry, not a rejection.
-    expect(postDot({ approval: 'rejected', derivedState: 'waiting-due' })).toBe('bg-red-600');
-    expect(postDot({ approval: 'approved', derivedState: 'overdue' })).toBe('bg-rose-400');
-    // draft+overdue: the card calls it "draft", so the dot must too (grey, not red).
-    expect(postDot({ approval: 'draft', derivedState: 'overdue' })).toBe('bg-zinc-400');
-  });
-
-  it('gives settled buckets distinct staircase hues (upcoming light-green vs published deep-green vs parked grey)', () => {
-    expect(postDot({ approval: 'approved', derivedState: 'waiting-due' })).toBe('bg-emerald-400');
-    expect(postDot({ approval: 'approved', derivedState: 'posted' })).toBe('bg-emerald-600');
-    expect(postDot({ approval: 'approved', derivedState: 'parked' })).toBe('bg-zinc-400');
   });
 });
 

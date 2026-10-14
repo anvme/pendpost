@@ -25,7 +25,7 @@ const dismissMock = vi.fn(() => Promise.resolve({ ok: true }));
 const probeMock = vi.fn(() => Promise.resolve({ ok: true, usable: true }));
 const markCopyPostedMock = vi.fn(() => Promise.resolve({ ok: true }));
 
-vi.mock('../../lib/api.js', () => ({
+vi.mock('../../lib/api.js', async (importOriginal) => { const real = await importOriginal(); return {
   useEngageAsks: () => ({ data: asksData, isLoading: loading, isError, refetch: refetchMock }),
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme' }, activeClientId: 'acme' }),
   engageAnswer: (...a) => answerMock(...a),
@@ -33,8 +33,11 @@ vi.mock('../../lib/api.js', () => ({
   engageDismiss: (...a) => dismissMock(...a),
   engageProbe: (...a) => probeMock(...a),
   radarMarkCopyPosted: (...a) => markCopyPostedMock(...a),
-  errText: (err, t, fallbackKey) => (err?.message || t(fallbackKey)),
-}));
+  // The REAL error helpers (the one plain path), never a stub that could drift from it.
+  errText: real.errText,
+  errAlert: real.errAlert,
+  errReason: real.errReason,
+}; });
 
 const ask = (over = {}) => ({
   id: 'ask-1',
@@ -154,16 +157,52 @@ describe('Ask row (spec 50 S4)', () => {
 
   it('keeps the typed answer when the send fails, and offers Retry', async () => {
     asksData = { ok: true, asks: [ask()] };
-    answerMock.mockImplementation(() => Promise.reject(new Error('the daemon is not running')));
+    answerMock.mockImplementation(() => Promise.reject(new TypeError('Load failed')));
     renderStrip();
     const row = screen.getByRole('listitem');
     const box = within(row).getByLabelText('Your answer');
     await userEvent.type(box, 'the reviewer link is in Starter');
     await userEvent.click(within(row).getByRole('button', { name: 'Send' }));
-    await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent('Could not send. the daemon is not running'));
+    await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent('Could not send. Could not reach your local pendpost. Is it running?'));
     // THE property: the words are still there. Losing them would be the one unforgivable bug.
     expect(box).toHaveValue('the reviewer link is in Starter');
     expect(within(row).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  // Raw-error sweep G1: an English server line is never inline; it is the "?" description only.
+  it('a send failure with an English server line says a plain sentence, raw line behind the "?"', async () => {
+    asksData = { ok: true, asks: [ask()] };
+    answerMock.mockImplementation(() => Promise.reject(new Error('HTTP 500 internal')));
+    renderStrip();
+    const row = screen.getByRole('listitem');
+    await userEvent.type(within(row).getByLabelText('Your answer'), 'yes');
+    await userEvent.click(within(row).getByRole('button', { name: 'Send' }));
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent(/^Could not send\.$/);
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    const tip = within(row).getByRole('button', { name: /more about this/i });
+    expect(document.getElementById(tip.getAttribute('aria-describedby'))?.textContent).toBe('HTTP 500 internal');
+    expect(within(row).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  // Wave 2g F3: a failed Check again says the check failed, not "Could not send".
+  it('a message-less check failure still leaves a plain sentence as the alert', async () => {
+    asksData = { ok: true, asks: [ask({ id: 'l1', kind: 'login', lane: 'linkedin', question: '', draft: '', signal: null })] };
+    probeMock.mockImplementationOnce(() => Promise.reject(new Error()));
+    renderStrip();
+    const row = screen.getByRole('listitem');
+    await userEvent.click(within(row).getByRole('button', { name: 'Check again' }));
+    expect(await within(row).findByRole('alert')).toHaveTextContent(/^Could not check\.$/);
+    expect(within(row).queryByRole('button', { name: /more about this/i })).toBeNull();
+  });
+
+  it('a check that cannot reach pendpost names the check and the known reason', async () => {
+    asksData = { ok: true, asks: [ask({ id: 'l1', kind: 'login', lane: 'linkedin', question: '', draft: '', signal: null })] };
+    probeMock.mockImplementationOnce(() => Promise.reject(new TypeError('Load failed')));
+    renderStrip();
+    const row = screen.getByRole('listitem');
+    await userEvent.click(within(row).getByRole('button', { name: 'Check again' }));
+    expect(await within(row).findByRole('alert')).toHaveTextContent('Could not check. Could not reach your local pendpost. Is it running?');
   });
 
   it('gives a confirm the Post primary and its own reason line', async () => {

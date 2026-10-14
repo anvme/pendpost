@@ -23,10 +23,14 @@ function wrapper(qc) {
   };
 }
 
+// The 4th column is whatever the key carries AFTER the rev. usePlatformValidate gained
+// a trailing clientId slot in f6481d57 (fix(approvals): gate Freigeben on content
+// readiness): an all-projects queue card validates under its OWN project, so the
+// project is folded into the key too. Callers that omit it get null there.
 const HOOKS = [
-  ['usePlatformValidate', usePlatformValidate, 'platform-validate'],
-  ['usePresubmitCheck', usePresubmitCheck, 'presubmit-check'],
-  ['useValidateMedia', useValidateMedia, 'validate-media'],
+  ['usePlatformValidate', usePlatformValidate, 'platform-validate', [null]],
+  ['usePresubmitCheck', usePresubmitCheck, 'presubmit-check', []],
+  ['useValidateMedia', useValidateMedia, 'validate-media', []],
 ];
 
 describe('per-post verdict reads are keyed by post.rev', () => {
@@ -42,10 +46,10 @@ describe('per-post verdict reads are keyed by post.rev', () => {
 
   const keys = () => qc.getQueryCache().getAll().map((q) => q.queryKey);
 
-  for (const [label, hook, name] of HOOKS) {
+  for (const [label, hook, name, tail] of HOOKS) {
     it(`${label} folds the rev into its query key`, () => {
       renderHook(() => hook('camp', 'p1', true, 'rev-aaa'), { wrapper: wrapper(qc) });
-      expect(keys()).toContainEqual([name, 'camp', 'p1', 'rev-aaa']);
+      expect(keys()).toContainEqual([name, 'camp', 'p1', 'rev-aaa', ...tail]);
     });
 
     it(`${label} cannot serve a verdict cached under a previous rev`, () => {
@@ -58,9 +62,17 @@ describe('per-post verdict reads are keyed by post.rev', () => {
 
     it(`${label} still keys cleanly when a caller has no rev yet`, () => {
       renderHook(() => hook('camp', 'p1', true), { wrapper: wrapper(qc) });
-      expect(keys()).toContainEqual([name, 'camp', 'p1', null]);
+      expect(keys()).toContainEqual([name, 'camp', 'p1', null, ...tail]);
     });
   }
+
+  it('usePlatformValidate keys two projects\' identical campaign/postId apart (f6481d57)', () => {
+    renderHook(() => usePlatformValidate('camp', 'p1', true, 'rev-aaa', 'client-a'), { wrapper: wrapper(qc) });
+    renderHook(() => usePlatformValidate('camp', 'p1', true, 'rev-aaa', 'client-b'), { wrapper: wrapper(qc) });
+    const forPost = keys().filter((k) => k[0] === 'platform-validate' && k[2] === 'p1');
+    expect(forPost).toHaveLength(2);
+    expect(forPost.map((k) => k[4]).sort()).toEqual(['client-a', 'client-b']);
+  });
 
   it('keeps the 30s staleTime: a same-rev read is still allowed to be served from cache', () => {
     renderHook(() => usePlatformValidate('camp', 'p1', true, 'rev-aaa'), { wrapper: wrapper(qc) });

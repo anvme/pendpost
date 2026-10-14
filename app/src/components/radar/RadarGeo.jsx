@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  ChevronDown, Check, CircleSlash, Eraser, FileText, PlugZap, RefreshCw, MoreHorizontal, Power, Bot, Sprout,
+  ChevronDown, Check, CircleSlash, Eraser, FileText, PlugZap, RefreshCw, MoreHorizontal, Power, Bot, Sprout, Zap,
 } from 'lucide-react';
 import { fmtRelative, warmthStanding, WARMTH_MIN_KARMA } from '../../lib/format.js';
 import { INNER_SURFACE, EYEBROW } from '../ui.jsx';
 import { Tip } from '../ui/Tooltip.jsx';
+import { TAP_TARGET, PILL_TONES, STATUS_INK } from '../ui/recipes.js';
 import { BacklogRow } from './RadarFeed.jsx';
 
 // Radar GEO cluster (split out of the former ~1850-line Radar.jsx monolith, 2026-08-05).
@@ -81,7 +82,7 @@ function QuestionRow({ q, qLog, t }) {
         <div className="mt-1 space-y-1 pl-4">
           <p className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
             {latest.mentioned ? (
-              <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 dark:text-emerald-300">
+              <span className={`inline-flex items-center gap-1 font-semibold ${STATUS_INK.ok}`}>
                 <Check size={11} aria-hidden="true" />{t('radar.geo.footprint.question.named')}
               </span>
             ) : (
@@ -227,7 +228,9 @@ function GeoSection({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, 
 
 // The panel-level overflow (feature altitude): "Turn Radar off" lives here, one step away, not as
 // a loud text link beside the primary Scan (canon: one primary; secondary/destructive in overflow).
-function PanelMenu({ onDisable, onGeoReset, t }) {
+// `onSetupAutoReply` is passed only while no reply channel exists: the Auto-Antwort card then has
+// nothing to turn on, so it leaves the page and this one entry leads to where lanes get connected.
+function PanelMenu({ onDisable, onGeoReset, onSetupAutoReply = null, t }) {
   const [open, setOpen] = useState(false);
   // S7.3: the GEO reset is destructive (it drops agent-logged AI-visibility history), so the
   // menu entry arms an INLINE confirm - the feed's "Erledigt" idiom (question + explicit yes /
@@ -246,7 +249,7 @@ function PanelMenu({ onDisable, onGeoReset, t }) {
   return (
     <div ref={ref} className="relative">
       <Tip label={t('radar.more')}>
-        <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('radar.more')} onClick={() => setOpen((v) => !v)} className="inline-flex items-center justify-center rounded-xl p-1.5 text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5">
+        <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('radar.more')} onClick={() => setOpen((v) => !v)} className={`inline-flex items-center justify-center rounded-xl p-1.5 text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5 ${TAP_TARGET}`}>
           <MoreHorizontal size={16} aria-hidden="true" />
         </button>
       </Tip>
@@ -269,6 +272,11 @@ function PanelMenu({ onDisable, onGeoReset, t }) {
                 <Eraser size={14} className="text-zinc-500" aria-hidden="true" />{t('radar.geo.reset')}
               </button>
             )
+          ) : null}
+          {onSetupAutoReply ? (
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); onSetupAutoReply(); }} className="flex w-full items-center gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-sm text-zinc-700 transition hover:bg-zinc-900/5 dark:text-zinc-200 dark:hover:bg-white/5">
+              <Zap size={14} className="text-zinc-500" aria-hidden="true" />{t('radar.engage.auto.setup')}
+            </button>
           ) : null}
           <button type="button" role="menuitem" onClick={() => { setOpen(false); onDisable(); }} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-zinc-700 transition hover:bg-zinc-900/5 dark:text-zinc-200 dark:hover:bg-white/5">
             <Power size={14} className="text-zinc-500" aria-hidden="true" />{t('radar.disable')}
@@ -340,13 +348,13 @@ function WarmthGauge({ warmth, t }) {
       </span>
       {/* Fixed-track fill (canon: animate on a fixed layout - the track never resizes). */}
       <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700" role="presentation">
-        <div className={`h-full rounded-full ${s.warm ? 'bg-emerald-500' : 'bg-brand dark:bg-brand-light'}`} style={{ width: `${pct}%` }} />
+        <div className="h-full rounded-full bg-brand dark:bg-brand-light" style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
         {t('radar.karma.gauge.age', { d: s.ageDays == null ? dash : s.ageDays })}
       </span>
       {s.warm ? (
-        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300">
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${PILL_TONES.ok}`}>
           <Check size={11} aria-hidden="true" />{t('radar.karma.gauge.warm')}
         </span>
       ) : (

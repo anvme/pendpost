@@ -20,6 +20,10 @@ const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-markerprune-'));
 process.env.PENDPOST_ROOT = WS;
 process.env.PENDPOST_MODE = 'mock';
 fs.mkdirSync(path.join(WS, 'data'), { recursive: true });
+// A readable (empty) manifest: pruneCloudMarkers deliberately skips while the plan store
+// cannot be read (a missing or corrupt manifest would otherwise read as "every post is gone").
+fs.mkdirSync(path.join(WS, 'data', 'plans'), { recursive: true });
+fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
 
 const { liveCloudMarkers, pruneCloudMarkers } = await import('../lib/scheduler.mjs');
 const { loadState, saveState } = await import('../lib/state.mjs');

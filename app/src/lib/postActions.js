@@ -11,6 +11,8 @@
 // availability logic is shared here. Lifted verbatim from PostDetail's inline gates so
 // the two stay byte-identical in meaning.
 
+import { liveFailure } from './format.js';
+
 // Publish evidence: a post is "already out" (so delete must force, and the schedule-side
 // actions no longer apply) when it is posted OR carries any minted platform id. Mirrors
 // PostDetail's EVIDENCE_ID_FIELDS exactly.
@@ -64,13 +66,22 @@ export function canPublishNowPost(post, { offlineLanes = [] } = {}) {
   // publish-now here would fire zero lanes and then read like a scheduler race. The
   // failure banner's "Lane fortsetzen" (resumeLane) is the one recovery - offering a
   // second, no-op button beside it is the exact dead-end the targetGone guard prevents.
-  const laneHalted = Boolean(post?.lastFailure?.halted);
+  // Both read the LIVE failure (format.js liveFailure, the UI's single gate): an old
+  // failure left on a post that is no longer failing must never hide this button.
+  const failure = liveFailure(post);
+  const laneHalted = Boolean(failure?.halted);
+  // A failure the engine classified with a recovery (lastFailure.recovery - a cloud
+  // credential refusal, X's reply restriction, a content block; lib/publish-hold.mjs
+  // failureRecovery) is refused again on every publish. The detail's failure banner
+  // offers the action that does recover it (reconnect / copy and post / edit) instead.
+  const needsOperator = Boolean(failure?.recovery);
   return (post?.derivedState === 'overdue' || post?.derivedState === 'publish-failed')
     && post?.approval === 'approved'
     && !post?.editedSinceApproval
     && !heldLaneOffline
     && !targetGone
-    && !laneHalted;
+    && !laneHalted
+    && !needsOperator;
 }
 
 // Whether force-publish is a HELD retry (needs the hold cleared via a same-time

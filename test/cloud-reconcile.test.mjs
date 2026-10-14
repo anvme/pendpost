@@ -127,8 +127,15 @@ try {
   await mkPost('br');
   await approvePost({ campaign: CAMP, postId: 'br', actor: 'owner' });
   setBrandAlwaysOn(CLIENT, true); // make the active client a firing brand
-  resultsPayload = [doneResult('good', 'IG_MINTED_1'), refusedResult('ref'), doneResult('br', 'IG_MINTED_BR')];
+  resultsPayload = [doneResult('good', 'IG_MINTED_1'), refusedResult('ref'), doneResult('br', 'IG_MINTED_BR'),
+    failedResult('brf', 'Telegram said: chat not found'), { ...refusedResult('ref2'), refusedCode: 'account_mismatch' }];
   const r4 = await cloud.reconcileAlwaysOnBrands();
+  // The "Sync now" summary used to DROP failed fires, so the Cloud page showed a success
+  // check while a post had just failed. failed rides the merge now, and a refusal carries
+  // the human reason (message) alongside its code.
+  ok(Array.isArray(r4.failed) && r4.failed.some((f) => f.postId === 'brf' && f.failureMessage === 'Telegram said: chat not found'), 'the always-on merge carries failed fires with their message');
+  ok(r4.refused.some((x) => x.postId === 'ref2' && x.refusedCode === 'account_mismatch' && /not the one this post was approved for/.test(x.message || '')), 'a credential refusal carries its human message');
+  ok(r4.refused.some((x) => x.postId === 'ref' && x.message === null), 'a non-credential refusal carries message:null (the app maps its code)');
   ok(r4.ok === true, 'reconcileAlwaysOnBrands returns ok');
   ok(r4.patched.some((p) => p.postId === 'br'), 'the new done post "br" is patched through the always-on loop');
   ok(r4.skipped.some((s) => s.postId === 'good' && s.outcome === 'already_posted'), 'the already-posted "good" is still skipped through the loop');

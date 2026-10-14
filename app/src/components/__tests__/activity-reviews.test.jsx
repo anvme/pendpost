@@ -139,3 +139,40 @@ describe('GBP reviews inbox (spec 03)', () => {
     expect(await axeClean(container)).toHaveNoViolations();
   });
 });
+
+// The raw-error sweep: a failed reviews read or reply is one plain sentence; the engine's
+// English line rides the house "?" beside it, never inline and never inside the alert.
+describe('GBP reviews failures speak a plain sentence', () => {
+  it('a failed read keeps the engine line behind the "?", outside the alert', () => {
+    reviewsState.data = { ok: false, code: 'engine_failure', message: 'gbp: GET reviews: HTTP 500 internal', items: [] };
+    renderActivity();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Reviews could not be loaded.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('gbp: GET reviews: HTTP 500 internal');
+  });
+
+  it('a message-less failed reply still shows the plain sentence', async () => {
+    reviewsState.data = { ok: true, items: REVIEWS };
+    replyMock.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderActivity();
+    await user.click(screen.getByRole('button', { name: 'Reply' }));
+    await user.type(screen.getByLabelText('Write a reply …'), 'Thanks!');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not send the reply.');
+  });
+
+  it('a failed reply with an English server line keeps it behind the "?"', async () => {
+    reviewsState.data = { ok: true, items: REVIEWS };
+    replyMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderActivity();
+    await user.click(screen.getByRole('button', { name: 'Reply' }));
+    await user.type(screen.getByLabelText('Write a reply …'), 'Thanks!');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+});

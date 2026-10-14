@@ -27,6 +27,8 @@ import { useConfirm } from './ui/confirm.jsx';
 import { Modal, CloseButton, CoverThumb, StatusPill, PlatformIcons, INNER_SURFACE } from './ui.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import ActionButton from './ui/ActionButton.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction, humanizeFailure, plainError } from '../lib/failureCopy.js';
 
 const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
 const keyOf = (post) => `${post.campaign}-${post.id}`;
@@ -143,7 +145,8 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
       if (err?.code === 'needs_confirm') {
         const ok = await confirm({
           title: t('planner.runNow.needsConfirm.title'),
-          body: err.message || t('planner.runNow.needsConfirm.body'),
+          // The Studio's own sentence: the engine's needs_confirm line is English for agents.
+          body: t('planner.runNow.needsConfirm.body'),
           confirmLabel: t('planner.runNow.needsConfirm.label'),
           danger: true,
         });
@@ -156,16 +159,24 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
     // An HTTP 200 is NOT a publish: read the per-lane truth from `ran`. A post
     // whose lanes all refused (or are cloud-held) stays selected and reports
     // WHY, instead of flashing success and falling back to overdue.
-    const { fired, held, halted, reason, rows } = publishRunOutcome(res, p.id);
+    const { fired, held, halted, cloudWait, failure, rows } = publishRunOutcome(res, p.id);
     if (fired) return;
-    if (held) throw new Error(t('planner.runDialog.cloudHeld'));
-    // A genuine per-lane failure (reason) wins over the halt marker so its actionable
+    // The cloud has this post and cannot answer the publish claim: nothing goes out
+    // locally until it answers (checked before `held`, whose copy promises a backstop).
+    if (cloudWait && !failure) throw plainError(t('planner.runDialog.cloudClaimWait'));
+    if (held) throw plainError(t('planner.runDialog.cloudHeld'));
+    // A genuine per-lane failure (failure) wins over the halt marker so its actionable
     // message is never swallowed on a mixed post (a halted lane + another lane failing).
-    if (reason) throw new Error(reason);
+    // The lane's own words are English engine text: the sentence says it plainly
+    // (humanizeFailure, PostDetail's publish-now rule) and the raw line rides the "?".
+    if (failure) {
+      const plain = humanizeFailure(failure, t);
+      throw plainError(plain.text, plain.raw);
+    }
     // The lane is paused by an account-level breaker (X 402 credits) and was dropped
     // before dispatch - not a refusal, and not "not due". Point at the resume control.
-    if (halted) throw new Error(t('planner.runDialog.laneHalted'));
-    throw new Error(rows.length ? t('planner.runDialog.laneRefused') : t('planner.runDialog.noneFired'));
+    if (halted) throw plainError(t('planner.runDialog.laneHalted'));
+    throw plainError(rows.length ? t('planner.runDialog.laneRefused') : t('planner.runDialog.noneFired'));
   };
 
   // Refresh the live plan/activity and drop the succeeded keys from the selection.
@@ -207,15 +218,30 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
           inFlightHit = true;
           break;
         }
-        fails.push({ id: p.id, msg: e?.message || 'Error' });
+        // Plain words when known (a lane sentence, a timeout, an unreachable pendpost); a
+        // server or engine line rides the "?" only, never the summary (Freigaben.runBulk).
+        fails.push({ id: p.id, ...humanizeAction(e, t, { fallbackKey: 'error.action' }) });
       }
     }
     refresh(done);
-    if (inFlightHit) throw new Error(t('planner.runNow.inFlight'));
+    if (inFlightHit) throw plainError(t('planner.runNow.inFlight'));
     if (fails.length) {
-      throw new Error(t('planner.runDialog.summary', { ok, failed: fails.length, ids: fails.map((f) => (f.msg ? `${f.id} (${f.msg})` : f.id)).join(', ') }));
+      const ids = fails.map((f) => (f.known ? `${f.id} (${f.text})` : f.id)).join(', ');
+      const detail = fails.filter((f) => f.raw).map((f) => `${f.id}: ${f.raw}`).join('\n') || null;
+      throw plainError(t('planner.runDialog.summary', { ok, failed: fails.length, ids }), detail);
     }
     onDone?.();
+  };
+
+  // The alert is built from the thrown error itself ({ text, raw }: the plain sentence, the
+  // raw line behind the "?"); rethrown so the button still flashes its error state.
+  const runGuarded = async () => {
+    try {
+      await onRun();
+    } catch (err) {
+      if (err?.canceled !== true) setBulkError(humanizeAction(err, t, { fallbackKey: 'error.action' }));
+      throw err;
+    }
   };
 
   return (
@@ -258,7 +284,10 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
 
       <div className="flex items-center justify-end gap-2 border-t border-zinc-900/5 pt-4 dark:border-white/10">
         {bulkError ? (
-          <p role="alert" className="mr-auto basis-full text-[11px] text-red-600 dark:text-red-300 sm:basis-auto">{bulkError}</p>
+          <div className="mr-auto flex basis-full items-start gap-1 sm:basis-auto">
+            <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{bulkError.text}</p>
+            <InfoTip label={bulkError.raw} />
+          </div>
         ) : null}
         <button
           type="button"
@@ -279,8 +308,7 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
             success: t('planner.runNow.success'),
             error: t('planner.runNow.error'),
           }}
-          onError={setBulkError}
-          onAction={onRun}
+          onAction={runGuarded}
         />
       </div>
     </Modal>

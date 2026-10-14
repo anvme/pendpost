@@ -3,7 +3,7 @@ import {
   canApprovePost, canRejectPost, canParkPost, canVerifyPost, canPublishNowPost,
   isPostEditable, postHasPublishEvidence, isHeldRetry,
 } from '../postActions.js';
-import { rowStatusKey } from '../format.js';
+import { postStatusWord } from '../format.js';
 
 // The shared post-action gates decide what the overview ⋯ menu (usePostActions) and the
 // detail drawer BOTH offer, so they must match PostDetail's inline gates exactly. Lifted
@@ -47,12 +47,27 @@ describe('post-action gates', () => {
     expect(canPublishNowPost({ ...overdue, publishHold: { lane: 'youtube' } }, { offlineLanes: ['youtube'] })).toBe(false);
     // a gone radar target is terminal
     expect(canPublishNowPost({ ...overdue, radarReplyTo: {}, radarReplyState: 'target_gone' })).toBe(false);
+    // a failure with an operator recovery (reconnect / manual / edit) is refused again on
+    // every publish: the detail offers that recovery instead of a retry that cannot work
+    for (const recovery of ['reconnect', 'manual', 'edit']) {
+      expect(canPublishNowPost({ ...overdue, derivedState: 'publish-failed', lastFailure: { terminal: true, recovery } })).toBe(false);
+    }
+    expect(canPublishNowPost({ ...overdue, derivedState: 'publish-failed', lastFailure: { terminal: false, recovery: null } })).toBe(true);
     // a lane halted by an account-level circuit breaker (X 402 credits) fires zero
     // lanes: publish-now would no-op and lie. The banner's "Lane fortsetzen" owns the
     // recovery instead, so the button is not offered.
     expect(canPublishNowPost({ approval: 'approved', derivedState: 'publish-failed', lastFailure: { lane: 'x', halted: true } })).toBe(false);
     // a plain publish-failed with no halt (e.g. a per-post refusal) still offers the retry
     expect(canPublishNowPost({ approval: 'approved', derivedState: 'publish-failed', lastFailure: { lane: 'x', halted: false } })).toBe(true);
+  });
+
+  it('canPublishNowPost: a stale failure on a post that is no longer failing never hides publish now', () => {
+    // An overdue post carrying an OLD failure (the attempts tail outlives a reschedule or
+    // re-approve) is not failing now: liveFailure (format.js) is the one gate, so neither
+    // the old recovery nor an old halt may take the button away.
+    const overdue = { approval: 'approved', derivedState: 'overdue' };
+    expect(canPublishNowPost({ ...overdue, lastFailure: { terminal: true, recovery: 'reconnect' } })).toBe(true);
+    expect(canPublishNowPost({ ...overdue, lastFailure: { lane: 'x', halted: true } })).toBe(true);
   });
 
   it('isHeldRetry only when publish-now is allowed AND a hold is stamped', () => {
@@ -71,20 +86,20 @@ describe('post-action gates', () => {
   });
 });
 
-describe('rowStatusKey: green approved baseline, attention overrides', () => {
+describe('postStatusWord: green approved baseline, attention overrides', () => {
   it('an approved, on-track post reads as green approved (not neutral scheduled)', () => {
-    expect(rowStatusKey({ approval: 'approved', derivedState: 'scheduled-native', executionMode: 'fully-scheduled' })).toBe('approved');
+    expect(postStatusWord({ approval: 'approved', derivedState: 'scheduled-native', executionMode: 'fully-scheduled' })).toBe('approved');
   });
   it('a not-yet-approved scheduled post stays its own bucket', () => {
     // a pending post is not 'scheduled' in the display bucket - it reads pending/draft
-    expect(rowStatusKey({ approval: 'pending', derivedState: 'draft' })).toBe('pending');
+    expect(postStatusWord({ approval: 'pending', derivedState: 'draft' })).toBe('pending');
   });
   it('every attention state overrides the green baseline', () => {
-    expect(rowStatusKey({ approval: 'approved', derivedState: 'overdue' })).toBe('overdue');
-    expect(rowStatusKey({ approval: 'approved', derivedState: 'verify-failed' })).toBe('verify-failed');
-    expect(rowStatusKey({ approval: 'rejected', derivedState: 'draft' })).toBe('rejected');
+    expect(postStatusWord({ approval: 'approved', derivedState: 'overdue' })).toBe('overdue');
+    expect(postStatusWord({ approval: 'approved', derivedState: 'verify-failed' })).toBe('verify-failed');
+    expect(postStatusWord({ approval: 'rejected', derivedState: 'draft' })).toBe('rejected');
   });
   it('a posted post is not recoloured green (it reads posted)', () => {
-    expect(rowStatusKey({ approval: 'approved', derivedState: 'posted' })).toBe('posted');
+    expect(postStatusWord({ approval: 'approved', derivedState: 'posted' })).toBe('posted');
   });
 });

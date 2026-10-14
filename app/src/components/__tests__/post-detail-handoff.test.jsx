@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -125,23 +125,30 @@ describe('an unconnected lane hands the post back instead of faking an approval'
   it('states the CONSEQUENCE in the pill row, replacing the approval promise it contradicts', () => {
     healthState.data = { setup: { platforms: incomplete } };
     renderDetail(replyPost());
-    // "Waiting for approval" is the wrong promise: there is no approval to wait for. The
-    // consequence badge REPLACES it rather than stacking a third pill beside it.
-    expect(screen.getByText(/you post this yourself/i)).toBeInTheDocument();
+    // "Waiting for approval" is the wrong promise: there is no approval to wait for. Reddit
+    // is the manual paste lane (MANUAL_LANES), so the ONE status pill reads the hand-off,
+    // the same word as the queue chip, the delivery row and the planner card (postStatusWord).
+    const header = screen.getByRole('dialog').querySelector('header');
+    expect(within(header).getByText(/^You post this yourself$/)).toBeInTheDocument();
+    expect(within(header).queryByText(/^Blocked$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/waiting for approval/i)).not.toBeInTheDocument();
   });
 
   it('keeps the ordinary approval pill when the lane is connected', () => {
     renderDetail(replyPost());
-    expect(screen.queryByText(/you post this yourself/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^You post this yourself$/)).not.toBeInTheDocument();
   });
 
-  // US-PRE-10: the "cannot publish" fact moved INTO the lane's own delivery row
-  // as the blocked-class label (never "Pending" beside a contradicting sentence).
+  // US-PRE-10: the "cannot publish" fact moved INTO the lane's own delivery row (never
+  // "Pending" beside a contradicting sentence). On the manual paste lane that fact is the
+  // hand-off itself, not a "connect Reddit" block.
   it('says plainly why, on the lane row itself', () => {
     healthState.data = { setup: { platforms: incomplete } };
     renderDetail(replyPost());
-    expect(screen.getByText(/Blocked - connect Reddit/)).toBeInTheDocument();
+    const header = screen.getByRole('dialog').querySelector('header');
+    const rows = screen.getAllByText(/^You post this yourself$/).filter((n) => !header.contains(n));
+    expect(rows.length).toBe(1);
+    expect(screen.queryByText(/Blocked: connect Reddit/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Pending/)).not.toBeInTheDocument();
     // ...and NOT the old mechanism line, which read the same whether Reddit was
     // live or had never been authorized.
@@ -223,9 +230,8 @@ describe('the hand-off says where the text is supposed to go', () => {
     const user = userEvent.setup();
     healthState.data = { setup: { platforms: [{ platform: 'reddit', status: 'incomplete' }, { platform: 'x', status: 'incomplete' }] } };
     renderDetail(planned({ platforms: ['reddit', 'x'], redditSubreddit: 'selfhosted' }));
-    // Both are offered; picking one for the operator would send them to the wrong network.
-    expect(screen.getByRole('link', { name: /post it on r\/selfhosted/i })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /post it on X/i })).toBeInTheDocument();
+    // Picking one for the operator would send them to the wrong network. (X is not a manual
+    // lane, so the post reads "Blocked" and the Destination section stays hidden.)
     await user.click(screen.getByRole('button', { name: /copy and post yourself/i }));
     expect(window.open).not.toHaveBeenCalled();
   });
@@ -237,26 +243,44 @@ describe('the hand-off says where the text is supposed to go', () => {
       platforms: { reddit: { ready: false, problems: ['x'], warnings: [], needsSetup: true } },
     };
     renderDetail(planned({ redditSubreddit: 'selfhosted' }));
-    expect(screen.getByRole('button', { name: /set up reddit/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^connect reddit$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /connect reddit so pendpost/i })).not.toBeInTheDocument();
   });
 
   it('keeps the wrench when platform-validate has no data - otherwise the fact has no way out', () => {
     platformValidateState.data = undefined;
     renderDetail(planned({ redditSubreddit: 'selfhosted' }));
-    expect(screen.queryByRole('button', { name: /set up reddit/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^connect reddit$/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /connect reddit so pendpost/i })).toBeInTheDocument();
   });
 
-  it('names a lane with no honest URL plainly - never a fabricated link, never silence', () => {
+  // Judge final (polish): the paste route "Paste the text on <lane> yourself" sat on a
+  // "Blocked" and a "Retrying" post, contradicting the status pill and repeating the
+  // Platforms section. The route is the MANUAL lane's path only: it shows when the post's
+  // one word (postStatusWord) is "You post this yourself", never on Blocked or Retrying.
+  it('a blocked lane (not a manual paste lane) gets no paste route: the status already names it', () => {
     healthState.data = { setup: { platforms: [{ platform: 'instagram', status: 'incomplete' }] } };
     renderDetail(planned({ platforms: ['instagram'] }));
     expect(screen.queryByRole('link', { name: /post it on/i })).not.toBeInTheDocument();
-    // The destination NAME is still true: the section says where, and that the text is on
-    // the clipboard - a plain statement instead of the old silence.
-    expect(screen.getByText('Where this goes')).toBeInTheDocument();
-    expect(screen.getByText(/paste the text on instagram yourself/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /copy and post yourself/i })).toBeInTheDocument();
+    expect(screen.queryByText('Where this goes')).not.toBeInTheDocument();
+    expect(screen.queryByText(/paste the text on instagram yourself/i)).not.toBeInTheDocument();
+  });
+
+  it('a retrying post gets no paste route, even when its lane reads offline', () => {
+    healthState.data = { setup: { platforms: [{ platform: 'linkedin', status: 'incomplete' }] } };
+    renderDetail(planned({
+      platforms: ['linkedin'], approval: 'approved', derivedState: 'publish-failed',
+      lastFailure: { lane: 'linkedin', message: 'linkedin: POST /rest/posts: HTTP 500', terminal: false, at: '2026-07-14T16:55:00Z' },
+    }));
+    expect(screen.queryByText('Where this goes')).not.toBeInTheDocument();
+    expect(screen.queryByText(/yourself$/i)).not.toBeInTheDocument();
+  });
+
+  it('a mixed post that is blocked on one lane shows no paste route for its manual lane either', () => {
+    healthState.data = { setup: { platforms: [{ platform: 'reddit', status: 'incomplete' }, { platform: 'telegram', status: 'incomplete' }] } };
+    renderDetail(planned({ platforms: ['reddit', 'telegram'], redditSubreddit: 'selfhosted' }));
+    expect(screen.queryByText('Where this goes')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /post it on r\/selfhosted/i })).not.toBeInTheDocument();
   });
 });
 

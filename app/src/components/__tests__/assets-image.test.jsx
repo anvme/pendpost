@@ -105,7 +105,7 @@ describe('Image assets render as pictures, never <video> (A4)', () => {
     // must not render; the image type indicator must.
     expect(screen.queryByRole('button', { name: /h\.264/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /web-optimized/i })).not.toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /image - a still/i }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: /image: a still/i }).length).toBeGreaterThan(0);
   });
 });
 

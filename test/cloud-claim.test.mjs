@@ -7,8 +7,11 @@
 //   2. Claim DENIED + CONSUMED           -> the cloud already published it: the post
 //      is marked posted with the claim's externalId (the reconcile write set) and
 //      the backstop stands down for good.
-//   3. Claim endpoint NETWORK ERROR      -> FAIL-OPEN: the backstop fires exactly as
-//      before the claim existed (a cloud that cannot answer cannot be firing).
+//   3. Claim endpoint NETWORK ERROR      -> splits on whether the cloud HAS the job
+//      (owner decision 2026-10-13, "fail closed for acked jobs"): an ACKED job is
+//      HELD (the cloud may already have published it), a job the cloud NEVER
+//      acknowledged still FAILS OPEN (the cloud cannot fire a job it never received).
+//      The full hold contract lives in test/cloud-backstop-fail-closed.test.mjs.
 //   4. Claim GRANTED                     -> the backstop fires and then CONSUMES the
 //      claim (the cloud worker records the job done-idempotent instead of re-firing).
 // Mock mode + a mocked global.fetch; no network, no real cloud, never publishes.
@@ -40,7 +43,9 @@ const CLIENT = activeClientId();
 let pass = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); pass += 1; };
 
-// Per-post claim behavior: postId -> 'granted' | 'denied' | 'consumed' | 'error'.
+// Per-post claim behavior: postId -> 'granted' | 'denied' | 'consumed' | 'error' |
+// 'error-unacked' (the claim errors AND the push never acknowledges the job, so the
+// cloud never had it).
 // Anything unlisted defaults to 'denied' so an older still-due post never fires
 // mid-test and pollutes a later case.
 const claimModes = new Map();
@@ -58,7 +63,7 @@ function installFetch() {
     if (url.endsWith('/v1/publish-claim') && method === 'POST') {
       const body = JSON.parse(init.body);
       const mode = claimModeOf(body.claimKey);
-      if (mode === 'error') throw new TypeError('fetch failed');
+      if (mode === 'error' || mode === 'error-unacked') throw new TypeError('fetch failed');
       claimCalls.push(body);
       if (body.action === 'acquire') {
         if (mode === 'denied') return json({ granted: false, consumed: false, externalId: null, holder: 'cloud' });
@@ -72,7 +77,8 @@ function installFetch() {
     if (url.endsWith('/v1/content/presign')) return json({ alreadyPresent: true });
     if (url.endsWith('/v1/sync/push') && method === 'POST') {
       const body = JSON.parse(init.body);
-      return json({ accepted: (body.jobs || []).map((j) => ({ jobId: j.jobId, enqueueRef: 'e1' })), refused: [] });
+      const unacked = (j) => claimModeOf(`:${j.identity && j.identity.postId}:`) === 'error-unacked';
+      return json({ accepted: (body.jobs || []).filter((j) => !unacked(j)).map((j) => ({ jobId: j.jobId, enqueueRef: 'e1' })), refused: [] });
     }
     if (url.includes('/v1/sync/results')) return json({ results: [] });
     if (url.includes('/v1/vault/') && method === 'PUT') return json({ ok: true });
@@ -127,14 +133,26 @@ try {
   ok(!t2.ran.some((r) => r.postId === 'p-consumed'), 'the consumed-claim post was never dispatched locally (no double-post)');
   ok(getActivity(80).some((e) => e.postId === 'p-consumed' && e.action === 'cloud-reconcile'), 'the mark-posted left its cloud-reconcile audit entry');
 
-  // --- (3) claim endpoint NETWORK ERROR: FAIL-OPEN, the backstop fires ---------------
+  // --- (3a) claim NETWORK ERROR on an ACKED job: FAIL-CLOSED, the backstop holds -----
   await addApprovedReel('p-error');
   claimModes.set('p-error', 'error');
   const t3 = await runDueExclusive('scheduler');
-  ok(readPost('p-error').status === 'posted', 'the backstop FIRED although the claim endpoint is unreachable (fail-open)');
-  ok(t3.ran.some((r) => r.postId === 'p-error' && r.lane === 'meta'), 'the fail-open fire went through the normal local dispatch');
-  ok(getActivity(80).some((e) => e.postId === 'p-error' && e.action === 'cloud-backstop'), 'the fail-open fire left its cloud-backstop activity entry');
-  ok(!claimCalls.some((cl) => cl.claimKey.includes(':p-error:') && cl.action === 'consume'), 'an unclaimed (fail-open) fire never tries to consume');
+  ok(readPost('p-error').status !== 'posted', 'an ACKED job is NOT fired while the claim endpoint is unreachable (the cloud may already have published it)');
+  ok(!t3.ran.some((r) => r.postId === 'p-error' && r.ok), 'no local dispatch for the held acked lane');
+  ok(!getActivity(80).some((e) => e.postId === 'p-error' && e.action === 'cloud-backstop'), 'no cloud-backstop row for the held acked lane');
+  ok(getActivity(80).some((e) => e.postId === 'p-error' && e.action === 'cloud-claim-wait'), 'the hold is surfaced as a cloud-claim-wait row');
+  claimModes.set('p-error', 'denied'); // park it so it never fires in a later case
+
+  // --- (3b) claim NETWORK ERROR on a NEVER-acked job: FAIL-OPEN, the backstop fires ---
+  await createPost({ campaign: CAMP, post: { id: 'p-unacked', type: 'reel', platforms: ['instagram'], scheduledAt: '2020-01-01T00:00:00Z', path: 'data/media/clip.mp4', caption: 'a quiet clip' }, actor: 'agent:a' });
+  claimModes.set('p-unacked', 'error-unacked');
+  await approvePost({ campaign: CAMP, postId: 'p-unacked', actor: 'owner' });
+  const t3b = await runDueExclusive('scheduler');
+  ok(!((loadState().cloudAccepted || {})[`${CAMP}:p-unacked:meta`]), 'the cloud never acknowledged p-unacked (no push-ack recorded)');
+  ok(readPost('p-unacked').status === 'posted', 'the backstop FIRED a never-acked job although the claim endpoint is unreachable (fail-open)');
+  ok(t3b.ran.some((r) => r.postId === 'p-unacked' && r.lane === 'meta'), 'the fail-open fire went through the normal local dispatch');
+  ok(getActivity(80).some((e) => e.postId === 'p-unacked' && e.action === 'cloud-backstop'), 'the fail-open fire left its cloud-backstop activity entry');
+  ok(!claimCalls.some((cl) => cl.claimKey.includes(':p-unacked:') && cl.action === 'consume'), 'an unclaimed (fail-open) fire never tries to consume');
 
   // --- (4) claim GRANTED: fire locally, then CONSUME the claim -----------------------
   await addApprovedReel('p-granted');
@@ -145,7 +163,7 @@ try {
   const consume = claimCalls.find((cl) => cl.action === 'consume' && cl.claimKey === `${CLIENT}:${CAMP}:p-granted:meta`);
   ok(Boolean(consume), 'a successful backstop fire CONSUMES the claim (the cloud then records done-idempotent)');
 
-  console.log(`[cloud-claim] OK - stands down on denial, marks posted on consumed, fail-open on network error, consumes on success (${pass} assertions).`);
+  console.log(`[cloud-claim] OK: stands down on denial, marks posted on consumed, holds an acked job and fails open for a never-acked one on network error, consumes on success (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

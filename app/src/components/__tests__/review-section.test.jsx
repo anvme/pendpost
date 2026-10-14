@@ -74,6 +74,39 @@ describe('ReviewSection (V4)', () => {
     expect(revokeReviewer).toHaveBeenCalledWith('acme', 'r1');
   });
 
+  it('a failed revoke says the plain sentence; the raw server line rides the "?" only', async () => {
+    reviewersState = { data: { reviewers: [{ id: 'r1', name: 'Martina', tokenTail: 'ab12', active: true, revoked: false, expired: false }] }, isLoading: false };
+    revokeReviewer.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderSection();
+    await user.click(screen.getByRole('button', { name: 'Revoke' }));
+    await user.click(await screen.findByRole('button', { name: 'Revoke link' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not revoke. Try again.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a failed toggle save says the plain sentence; the raw server line rides the "?" only', async () => {
+    saveConfig.mockRejectedValue(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderSection();
+    await user.click(screen.getByRole('switch', { name: /require/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not save the change. Try again.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a message-less toggle failure still leaves the plain sentence as the alert', async () => {
+    saveConfig.mockRejectedValue(new Error());
+    const user = userEvent.setup();
+    renderSection();
+    await user.click(screen.getByRole('switch', { name: /require/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the change. Try again.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
+  });
+
   it('turning on the hosted toggle refuses honestly and stays off (O6 fail-closed)', async () => {
     saveConfig.mockRejectedValue(Object.assign(new Error('nope'), { code: 'review_hosted_unavailable' }));
     const user = userEvent.setup();

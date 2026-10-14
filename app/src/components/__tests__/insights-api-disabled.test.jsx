@@ -54,9 +54,9 @@ describe('Insights api_disabled surface (spec-15 follow-on)', () => {
     const user = userEvent.setup();
     renderInsights();
     await user.click(fetchBtn());
-    const note = await screen.findByText(/analytics api is turned off in your google cloud project/i);
+    const note = await screen.findByText(/analytics is turned off in your google cloud project/i);
     expect(note).toBeInTheDocument();
-    const link = screen.getByRole('link', { name: /enable the api/i });
+    const link = screen.getByRole('link', { name: /turn on in google cloud/i });
     expect(link).toHaveAttribute('href', 'https://console.developers.google.com/apis/api/youtubeanalytics.googleapis.com/overview?project=449370365247');
   });
 
@@ -68,7 +68,7 @@ describe('Insights api_disabled surface (spec-15 follow-on)', () => {
     const user = userEvent.setup();
     renderInsights();
     await user.click(fetchBtn());
-    const link = await screen.findByRole('link', { name: /enable the api/i });
+    const link = await screen.findByRole('link', { name: /turn on in google cloud/i });
     expect(link).toHaveAttribute('href', 'https://console.cloud.google.com/apis/library');
   });
 
@@ -78,6 +78,6 @@ describe('Insights api_disabled surface (spec-15 follow-on)', () => {
     renderInsights();
     await user.click(fetchBtn());
     await waitFor(() => expect(fetchInsightsMock).toHaveBeenCalled());
-    expect(screen.queryByRole('link', { name: /enable the api/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /turn on in google cloud/i })).not.toBeInTheDocument();
   });
 });

@@ -220,6 +220,32 @@ try {
   recordAttempt(sp, { ts: new Date(T0 + 60000).toISOString(), platform: 'instagram', action: 'publish-reel', ok: true, errorCode: null, errorMessage: null });
   ok(!sp.publishRetry && !sp.publishHold, 'a real success clears BOTH publishRetry and publishHold');
 
+  // 2026-09-29 ig-tuesdays-morrie: the local backstop parked a healthy reel after ~9
+  // minutes on 400 PFE -> 408 -> fetch failed -> 503. Gateway/timeout/rate statuses are
+  // the platform being briefly unavailable, so they ride out like the PFE does.
+  for (const m of ['rupload 1: HTTP 408 {}', 'rupload 1: HTTP 503 {}', 'HTTP 429 {}', 'HTTP 502 Bad Gateway']) {
+    ok(isTransientFailure({ ok: false, errorCode: 'engine_failure', errorMessage: m }) === true, `an HTTP 408/429/5xx upload error is transient (${m})`);
+  }
+  ok(isTransientFailure({ ok: false, errorCode: 'engine_failure', errorMessage: 'HTTP 400 {"error":"bad"}' }) === false, 'a plain HTTP 400 is NOT transient');
+
+  const morrieSeq = [
+    'rupload 1: HTTP 400 {"debug_info":{"retriable":false,"type":"ProcessingFailedError"}}',
+    'rupload 2: HTTP 408 {}', 'fetch failed', 'rupload 4: HTTP 503 {}',
+  ];
+  const morrie = { attempts: [] };
+  const mOffsets = [0, 2, 5, 9];
+  morrieSeq.forEach((m, i) => recordAttempt(morrie, { ...igFail(T0 + mOffsets[i] * 60000), errorMessage: m }));
+  ok(!morrie.publishHold, 'the mixed transient run (400 PFE, 408, fetch failed, 503) does NOT park the reel');
+  ok(morrie.publishRetry && morrie.publishRetry.attempts === 4 && Date.parse(morrie.publishRetry.nextAt) > T0 + 9 * 60000, `the mixed transient run keeps a future retry scheduled (${JSON.stringify(morrie.publishRetry)})`);
+
+  // a ridden-out outage is not a strike: two transient rows then one genuine refusal
+  // must not add up to the 3-strike cap
+  const gs = { attempts: [] };
+  recordAttempt(gs, igFail(T0));
+  recordAttempt(gs, igFail(T0 + 60000));
+  recordAttempt(gs, { ...igFail(T0 + 3 * 60000), errorMessage: 'HTTP 400 {"error":"bad"}' });
+  ok(!gs.publishHold, 'earlier transient failures do not count as strikes toward the genuine-refusal cap');
+
   // ===== (i) integration: a transient mock failure rides out, never hammers ======
   // Contrast with (a): three back-to-back ticks on a PERMANENT 9004 = 3 attempts +
   // park; three back-to-back ticks on a TRANSIENT failure = ONE attempt (the backoff
@@ -281,9 +307,15 @@ try {
   ok(mp.attempts.length === 1 && Boolean(mp.publishHold), 'a single confirmed-dead-URL failure parks the carousel immediately (no 3-strike hammer of Meta)');
   ok(/re-mirror the render/i.test(mp.publishHold?.message || ''), 'the hold carries the actionable re-mirror diagnosis');
 
+  // an engine's own pre-submit content refusal (invalid_content: no title / no
+  // subreddit / body over the limit) fails identically until the post is edited
+  const ic = { attempts: [] };
+  recordAttempt(ic, { ts: new Date().toISOString(), platform: 'reddit', action: 'publish', ok: false, errorCode: 'invalid_content', errorMessage: 'no subreddit - set the post\'s subreddit' });
+  ok(ic.attempts.length === 1 && ic.publishHold?.code === 'invalid_content', 'a single invalid_content refusal parks the post immediately');
+
   // contrast: a generic refusal still needs the full 3 strikes to park
   const gp = { attempts: [] };
-  const gFail = (ts) => ({ ts: new Date(ts).toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: 'X POST /tweets: HTTP 503 - over capacity' });
+  const gFail = (ts) => ({ ts: new Date(ts).toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: 'X POST /tweets: HTTP 400 - invalid request' }); // a 5xx is transient now (rides out)
   recordAttempt(gp, gFail(Date.now()));
   ok(!gp.publishHold, 'a generic refusal does NOT park on the first strike');
   recordAttempt(gp, gFail(Date.now() + 1000));

@@ -107,7 +107,9 @@ try {
   ok(await asClient(() => dailyAgentScan()) === null, 'over budget (1/1 scheduler feed job) => the scheduled scan is refused');
   ok(budgetActs().length === 1, '(c) the skip wrote ONE Activity entry (action radar-agent-scan, errorCode budget)');
   const entry = budgetActs()[0];
-  ok(entry.ok === false && entry.actor === 'scheduler', 'the entry is honest: ok:false, actor scheduler');
+  // A spend limit saying no is not a failure (nothing to fix; tomorrow's scan runs by
+  // itself): a neutral note, ok:true with the budget code, never a red failure row.
+  ok(entry.ok === true && entry.actor === 'scheduler', 'the entry is a neutral note: ok:true, errorCode budget, actor scheduler');
   ok(await asClient(() => dailyAgentScan()) === null, 'still refused on the next tick');
   ok(budgetActs().length === 1, '(c) but NOT spammed - at most one budget-skip entry per day');
 

@@ -91,12 +91,12 @@ describe('Composer — Nostr article authoring fields (spec 18)', () => {
 
   it('surfaces the body-required blocker when the article body is empty (publish gating)', () => {
     renderComposer(nostrPost({ body: '' }));
-    expect(screen.getByText('An article needs a body - this is the published content.')).toBeInTheDocument();
+    expect(screen.getByText('An article needs a body: this is the published content.')).toBeInTheDocument();
   });
 
   it('does NOT show the body-required blocker once the body is filled', () => {
     renderComposer(nostrPost({ body: 'Real content.' }));
-    expect(screen.queryByText('An article needs a body - this is the published content.')).not.toBeInTheDocument();
+    expect(screen.queryByText('An article needs a body: this is the published content.')).not.toBeInTheDocument();
   });
 
   it('has no axe violations with the article fields rendered', async () => {

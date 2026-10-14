@@ -54,12 +54,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
-import { recordAttempt } from '../lib/publish-hold.mjs';
+import { recordAttempt, INVALID_CONTENT } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { laneReadiness } from '../lib/lane-readiness.mjs';
 import { classifySubRules } from '../lib/reddit-norms.mjs';
@@ -691,7 +691,7 @@ async function cmdValidate(args) {
     const kind = redditSubmitKind(post, ext);
     console.log(`\n----- ${post.id} -----`);
     console.log(`[preview] kind:    ${kind}`);
-    console.log(`[preview] title (${title.length}/${TITLE_LIMIT}${title.length > TITLE_LIMIT ? ' - OVER LIMIT' : ''}): ${title || '(MISSING - required)'}`);
+    console.log(`[preview] title (${title.length}/${TITLE_LIMIT}): ${title || '(MISSING - required)'}`);
     if (kind === 'link') {
       console.log(`[preview] url:     ${ext}`);
     } else if (kind === 'gallery') {
@@ -786,16 +786,32 @@ export async function cmdPublishDue(args) {
       continue;
     }
 
+    // A content problem the engine refuses BEFORE any submit (no title, no subreddit,
+    // body over the limit) is an explicit, operator-actionable failure: an ok:false
+    // result row plus a recorded attempt with INVALID_CONTENT, which publish-hold parks
+    // on the first strike (the same content fails the same check every tick; an edit
+    // clears the hold). A bare [warn] + `continue` left the post owed with no row, so
+    // the scheduler re-spawned this engine every 60s tick forever.
+    const refuseContent = async (reason) => {
+      console.log(`[warn] ${post.id}: ${reason} - skipping.`);
+      if (!args['dry-run']) {
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'reddit', action: 'publish', ok: false, errorCode: INVALID_CONTENT, errorMessage: reason, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+      }
+      RUN.results.push({ postId: post.id, platform: 'reddit', action: 'publish', ok: false, errorCode: INVALID_CONTENT, errorMessage: reason });
+    };
+
     const title = titleFor(post);
-    if (!title) { console.log(`[warn] ${post.id}: due but no title (post.title / first caption line) - skipping.`); continue; }
-    if (title.length > TITLE_LIMIT) { console.log(`[warn] ${post.id}: title is ${title.length} chars (> ${TITLE_LIMIT}) - skipping.`); continue; }
+    // No length check here: titleFor already truncates to TITLE_LIMIT, and presubmit warns
+    // the operator before approval ("the engine truncates", lib/writes.mjs).
+    if (!title) { await refuseContent('no title - set post.title or put the title on the first caption line'); continue; }
 
     // Spec 36: resolve the destination subreddit for THIS post - the per-post
     // redditSubreddit (a leading r/ is stripped) falls back to the connection
     // default. No subreddit at all -> a per-post warn+skip (the demoted throw),
     // placed BEFORE any submit so no sub-less post ever reaches the API.
     const sr = (post.redditSubreddit || '').replace(/^\/?r\//, '').trim() || subreddit();
-    if (!sr) { console.log(`[warn] ${post.id}: no subreddit (post.redditSubreddit / REDDIT_SUBREDDIT) - skipping.`); continue; }
+    if (!sr) { await refuseContent('no subreddit - set the post\'s subreddit (redditSubreddit) or a default REDDIT_SUBREDDIT for the connection'); continue; }
 
     const ext = externalUrl(post);
     const text = bodyText(post);
@@ -833,7 +849,7 @@ export async function cmdPublishDue(args) {
     // Spec 16: choose the submission kind by (post.type, media, redditUrl). Poll is
     // already handled above; the rest are link / self / image / video.
     const kind = pollPost ? 'poll' : redditSubmitKind(post, ext);
-    if (kind === 'self' && text.length > TEXT_LIMIT) { console.log(`[warn] ${post.id}: text is ${text.length} chars (> ${TEXT_LIMIT}) - skipping.`); continue; }
+    if (kind === 'self' && text.length > TEXT_LIMIT) { await refuseContent(`body is ${text.length} chars, over the ${TEXT_LIMIT}-char reddit limit - shorten it`); continue; }
 
     // Spec 16 (P3): image/video need a local render, validated BEFORE any remote call.
     // Missing bytes degrade to a STRUCTURED ok:false skip row (never a text fallback,
@@ -1048,7 +1064,7 @@ async function cmdInsights(args) {
       if (!child) { RUN.results.push({ postId: post.id, platform: 'reddit', action: 'insights', ok: true, metrics: {} }); continue; }
       RUN.results.push({ postId: post.id, platform: 'reddit', action: 'insights', ok: true, metrics: { score: child.score ?? 0, num_comments: child.num_comments ?? 0, upvote_ratio: child.upvote_ratio ?? null } });
     } catch (err) {
-      RUN.results.push({ postId: post.id, platform: 'reddit', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 200) });
+      RUN.results.push({ postId: post.id, platform: 'reddit', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 200) });
     }
   }
 }
@@ -1478,7 +1494,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }

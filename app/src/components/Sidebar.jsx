@@ -3,82 +3,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Square, Plus, Settings, ChevronRight, ChevronDown, Clock, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, Monitor, CornerUpLeft, Radar, Loader2 } from 'lucide-react';
 import { setSchedulerRunning, useSignals } from '../lib/api.js';
 import { useCloud, useCloudClients } from '../lib/cloud.js';
-import { fmtTime, fmtDayShort, fmtFull, visiblePlatforms } from '../lib/format.js';
+import { fmtTime, fmtDayShort, fmtFull } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
 import { INNER_SURFACE, PLATFORM_META, DISABLED_PRIMARY } from './ui.jsx';
 import ClientSwitcher from './ClientSwitcher.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import FeedbackDialog from './FeedbackDialog.jsx';
-
-// Relative "checked X ago" for the live-probe sub line. Takes the translator so it
-// stays a pure helper while returning localized prose.
-function ago(iso, t) {
-  if (!iso) return null;
-  const ms = Date.now() - Date.parse(iso);
-  if (Number.isNaN(ms)) return null;
-  const min = Math.round(ms / 60000);
-  if (min < 1) return t('sidebar.ago.justNow');
-  if (min < 60) return t('sidebar.ago.minutes', { n: min });
-  const h = Math.round(min / 60);
-  if (h < 24) return t('sidebar.ago.hours', { n: h });
-  return t('sidebar.ago.days', { n: Math.round(h / 24) });
-}
-
-// Health-tile sub-line from a lane's live probe (3b): presence flags say a
-// credential EXISTS; live says it actually authenticates. `fallback` is the
-// caller's already-localized "Page id" / "not configured" / "not connected" line,
-// `connected` the caller's own credential flag. A failed probe on a lane with NO
-// creds reads as the localized fallback - the engine's raw English detail
-// ("not configured (Page token/Page ID missing)") is honest ONLY on a lane that
-// HAS creds but failed a live probe (e.g. "introspect HTTP 401"), where it passes
-// through verbatim. Module-level + t-injected so it stays a pure, testable helper.
-export function liveSub(t, live, fallback, connected) {
-  if (!live || live.skipped) return fallback;
-  if (live.ok !== true && !connected) return fallback;
-  const checkedAgo = ago(live.checkedAt, t);
-  const base = live.ok ? t('setup.status.connected') : (live.detail || t('sidebar.probeFailed'));
-  return checkedAgo ? t('sidebar.checkedAgo', { base, ago: checkedAgo }) : base;
-}
-
-function HealthDot({ tone, className = 'mt-1' }) {
-  const cls = tone === 'ok' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : tone === 'err' ? 'bg-red-500' : 'bg-zinc-400';
-  return <span className={`${className} h-2 w-2 shrink-0 rounded-full ${cls}`} aria-hidden="true" />;
-}
-
-export function HealthTile({ tone, title, sub, action, onClick }) {
-  const t = useT();
-  const body = (
-    <>
-      <HealthDot tone={tone} />
-      <div className="min-w-0 flex-1">
-        <p className="min-w-0 truncate text-xs font-bold leading-tight">{title}</p>
-        {sub ? <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{sub}</p> : null}
-      </div>
-    </>
-  );
-  return (
-    <div className={`flex items-start gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-      {/* US-CONN-14: the credential tiles deep-link to Setup so a non-technical
-          owner has a path forward instead of a copy-CLI dead end. Any CLI action
-          stays a sibling control, never nested inside this button (no
-          nested-interactive a11y violation). */}
-      {onClick ? (
-        <button
-          type="button"
-          onClick={onClick}
-          aria-label={t('sidebar.openSetupFor', { platform: title })}
-          className="group flex min-w-0 flex-1 items-start gap-2 rounded-lg text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-        >
-          {body}
-        </button>
-      ) : (
-        <div className="flex min-w-0 flex-1 items-start gap-2">{body}</div>
-      )}
-      {action}
-    </div>
-  );
-}
 
 // `dot` - the quiet unread marker (like a chat app's): a small brand dot beside the badge,
 // with its meaning in an sr-only label (never colour-only for screen readers).
@@ -154,7 +85,7 @@ export function SchedulerToggle({ running, setupReady }) {
   );
 }
 
-export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue, onCreateProject, onBeforeSwitchClient, allClients = false, onAllClientsChange }) {
+export default function Sidebar({ accounts, posting, pendingCount, nextPost, attention, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue, onCreateProject, onBeforeSwitchClient, allClients = false, onAllClientsChange }) {
   const t = useT();
   const [showFeedback, setShowFeedback] = useState(false);
   // The Radar nav row reflects the live scan (owner ask 2026-07-20): while a research job
@@ -175,85 +106,6 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
       return seen ? (radarFeed?.items || []).filter((s) => s.foundAt && s.foundAt > seen).length : 0;
     } catch { return 0; }
   })() : 0;
-  // Show only the relevant logos: the same connected+enabled+not-skipped rule the
-  // dashboard uses (lib/format.js). The set holds DISPLAY ids (facebook/instagram
-  // separately), so a chip renders only when its id is in `visible`.
-  const visible = new Set(visiblePlatforms(accounts, posting));
-  const meta = accounts?.meta;
-  const li = accounts?.linkedin;
-  const yt = accounts?.youtube;
-  const x = accounts?.x;
-  const tg = accounts?.telegram;
-  const dc = accounts?.discord;
-  const rd = accounts?.reddit;
-  const pin = accounts?.pinterest;
-  const tk = accounts?.tiktok;
-  const ma = accounts?.mastodon;
-  const wp = accounts?.wordpress;
-  const gh = accounts?.ghost;
-  const no = accounts?.nostr;
-  const gb = accounts?.gbp;
-  const block = meta?.block;
-  const blocked = Boolean(block?.tracked && block.blockedUntil);
-
-  const metaLive = meta?.live;
-  // The Meta lane can be deliberately PAUSED (kill switch) independent of a 368
-  // action-block: a hard block (err) still wins, but an otherwise-healthy lane
-  // that is paused reads amber.
-  const metaPaused = Boolean(meta?.paused);
-  const metaTone = !meta ? 'off' : blocked ? 'err' : !meta.configured ? 'err' : metaPaused ? 'warn' : metaLive?.ok === false ? 'err' : 'ok';
-
-  const liExpSoon = li?.authenticated && li.tokenExpiresAt && (Date.parse(li.tokenExpiresAt) - Date.now()) < 7 * 24 * 3600 * 1000;
-  const liTone = !li ? 'off' : !li.authenticated ? 'warn' : li.live?.ok === false ? 'err' : liExpSoon ? 'warn' : 'ok';
-
-  const ytTone = !yt ? 'off' : !yt.authenticated ? 'warn' : yt.live?.ok === false ? 'err' : 'ok';
-
-  // X supports OAuth 2.0 (rotating token, may expire) and OAuth 1.0a (long-lived,
-  // no expiry -> tokenExpiresAt null -> never "expires soon"); the linkedin-style
-  // expiry tone covers both honestly.
-  const xExpSoon = x?.authenticated && x.tokenExpiresAt && (Date.parse(x.tokenExpiresAt) - Date.now()) < 7 * 24 * 3600 * 1000;
-  const xTone = !x ? 'off' : !x.authenticated ? 'warn' : x.live?.ok === false ? 'err' : xExpSoon ? 'warn' : 'ok';
-
-  // Telegram + Discord + the wave-2 static lanes + OAuth GBP: the tone is simply
-  // off / not-connected / live-failed / ok. Reddit accepts script-app creds, so
-  // its connection flag reads authenticated OR configured.
-  const tgTone = !tg ? 'off' : !tg.authenticated ? 'warn' : tg.live?.ok === false ? 'err' : 'ok';
-  const dcTone = !dc ? 'off' : !dc.authenticated ? 'warn' : dc.live?.ok === false ? 'err' : 'ok';
-  const rdConnected = Boolean(rd?.authenticated || rd?.configured);
-  const rdTone = !rd ? 'off' : !rdConnected ? 'warn' : rd.live?.ok === false ? 'err' : 'ok';
-  const pinTone = !pin ? 'off' : !pin.authenticated ? 'warn' : pin.live?.ok === false ? 'err' : 'ok';
-  const tkTone = !tk ? 'off' : !tk.authenticated ? 'warn' : tk.live?.ok === false ? 'err' : 'ok';
-  const maTone = !ma ? 'off' : !ma.authenticated ? 'warn' : ma.live?.ok === false ? 'err' : 'ok';
-  const wpTone = !wp ? 'off' : !wp.authenticated ? 'warn' : wp.live?.ok === false ? 'err' : 'ok';
-  const ghTone = !gh ? 'off' : !gh.authenticated ? 'warn' : gh.live?.ok === false ? 'err' : 'ok';
-  const noTone = !no ? 'off' : !no.authenticated ? 'warn' : no.live?.ok === false ? 'err' : 'ok';
-  const gbTone = !gb ? 'off' : !gb.authenticated ? 'warn' : gb.live?.ok === false ? 'err' : 'ok';
-
-  // Connected lanes as data: one connected lane == one entry, so Meta folds fb+ig
-  // into a single entry (primary glyph = the first visible of the two). The rail
-  // shows the roll-up dot + glyph cluster; every per-lane detail and reconnect
-  // affordance lives on the Setup page the row links to.
-  const metaGlyphs = [];
-  if (visible.has('facebook')) metaGlyphs.push(PLATFORM_META.facebook);
-  if (visible.has('instagram')) metaGlyphs.push(PLATFORM_META.instagram);
-  const lanes = [
-    metaGlyphs.length ? { id: 'meta', icon: metaGlyphs[0], tone: metaTone } : null,
-    visible.has('linkedin') ? { id: 'linkedin', icon: PLATFORM_META.linkedin, tone: liTone } : null,
-    visible.has('youtube') ? { id: 'youtube', icon: PLATFORM_META.youtube, tone: ytTone } : null,
-    visible.has('x') ? { id: 'x', icon: PLATFORM_META.x, tone: xTone } : null,
-    visible.has('telegram') ? { id: 'telegram', icon: PLATFORM_META.telegram, tone: tgTone } : null,
-    visible.has('discord') ? { id: 'discord', icon: PLATFORM_META.discord, tone: dcTone } : null,
-    visible.has('reddit') ? { id: 'reddit', icon: PLATFORM_META.reddit, tone: rdTone } : null,
-    visible.has('pinterest') ? { id: 'pinterest', icon: PLATFORM_META.pinterest, tone: pinTone } : null,
-    visible.has('tiktok') ? { id: 'tiktok', icon: PLATFORM_META.tiktok, tone: tkTone } : null,
-    visible.has('mastodon') ? { id: 'mastodon', icon: PLATFORM_META.mastodon, tone: maTone } : null,
-    visible.has('wordpress') ? { id: 'wordpress', icon: PLATFORM_META.wordpress, tone: wpTone } : null,
-    visible.has('ghost') ? { id: 'ghost', icon: PLATFORM_META.ghost, tone: ghTone } : null,
-    visible.has('nostr') ? { id: 'nostr', icon: PLATFORM_META.nostr, tone: noTone } : null,
-    visible.has('gbp') ? { id: 'gbp', icon: PLATFORM_META.gbp, tone: gbTone } : null,
-  ].filter(Boolean);
-  const accountCount = lanes.length;
-  const accountsRollup = lanes.some((l) => l.tone === 'err') ? 'err' : lanes.some((l) => l.tone === 'warn') ? 'warn' : lanes.some((l) => l.tone === 'ok') ? 'ok' : 'off';
 
   const schedulerRunning = Boolean(accounts?.scheduler?.running);
   // Surface the last sweep so an EMPTY sweep (nothing was due) is still visible
@@ -271,22 +123,23 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
   const { data: cloudClientsData } = useCloudClients(cloudConnected);
   const activeOnCloud = cloudConnected && Boolean(cloud?.enabled) && ((cloudClientsData?.clients) || []).find((c) => c.active)?.alwaysOn === true;
   const deliveryLocalState = schedulerRunning ? t('sidebar.delivery.localActive') : t('sidebar.delivery.localPaused');
-  const deliveryLocalSub = schedulerLastRun
-    ? `${deliveryLocalState} · ${t('settings.lastRun', { value: fmtTime(schedulerLastRun) })}`
-    : deliveryLocalState;
+  const deliveryLastRun = schedulerLastRun ? t('settings.lastRun', { value: fmtTime(schedulerLastRun) }) : null;
 
   return (
     // Below lg this is an off-canvas drawer: fixed, hidden (translated + invisible
     // so it stays out of the tab order) until `open`, then slid in with a scrim.
-    // At lg+ every narrow utility is reset to the original permanent rail — no
+    // At lg+ every narrow utility is reset to the original permanent rail, no
     // visual change on desktop. `open` is only ever true on narrow, so the dialog
-    // semantics never attach to the desktop rail.
+    // semantics never attach to the desktop rail. overflow-y-auto holds at every
+    // width: the rail is its own fixed column beside <main>, so on a short window
+    // (1280x600) it scrolls itself instead of running past the h-dvh frame, where
+    // its bottom rows were clipped and unreachable.
     <aside
       id="app-sidebar"
       role={open ? 'dialog' : undefined}
       aria-modal={open ? 'true' : undefined}
       aria-label={open ? t('sidebar.mainNav') : undefined}
-      className={`glass-panel fixed inset-y-4 left-4 z-50 flex w-60 shrink-0 flex-col gap-3 overflow-y-auto rounded-2xl p-4 transition-transform duration-200 motion-reduce:transition-none lg:w-sidebar lg:static lg:inset-auto lg:left-auto lg:z-10 lg:translate-x-0 lg:overflow-visible lg:transition-none ${open ? 'translate-x-0' : 'invisible -translate-x-[calc(100%+1.5rem)] lg:visible'}`}
+      className={`glass-panel fixed inset-y-4 left-4 z-50 flex w-60 shrink-0 flex-col gap-3 overflow-y-auto scrollbar-soft rounded-2xl p-4 transition-transform duration-200 motion-reduce:transition-none lg:w-sidebar lg:static lg:inset-auto lg:left-auto lg:z-10 lg:translate-x-0 lg:transition-none ${open ? 'translate-x-0' : 'invisible -translate-x-[calc(100%+1.5rem)] lg:visible'}`}
     >
       <div>
         <p className="font-display text-lg font-bold text-brand dark:text-brand-light">pendpost</p>
@@ -383,7 +236,9 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
         {/* Setup nav with a calm "incomplete (N)" reflection: only when the
             server's setup signal is explicitly NOT ready. Skipped platforms are
             already excluded from the count server-side, so an all-skipped pendpost
-            reads ready and shows no badge. */}
+            reads ready and shows no badge. This badge is the rail's ONE lane-health
+            signal: a colour dot beside lane logos said the same thing by colour
+            alone, so it was removed (final judge). Per-lane detail lives on Setup. */}
         <NavItem
           icon={Wrench}
           label={t('nav.setup')}
@@ -426,12 +281,18 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
             </button>
           );
         })() : null}
-        {overdueCount > 0 ? (
-          <Tip label={t('sidebar.overdueHint')}>
+        {attention ? (() => {
+          // One slot, the card's word (lib/format.js attentionSummary): "Wartet auf dich: n"
+          // for refusals only the operator can fix, "Überfällig: n" otherwise.
+          const needsYou = attention.kind === 'needs-you';
+          const label = t(needsYou ? 'sidebar.needsYou' : 'sidebar.overdue', { count: attention.count });
+          const hint = t(needsYou ? 'status.tip.publish-needs-you' : 'sidebar.overdueHint');
+          return (
+          <Tip label={hint}>
             <button
               type="button"
               onClick={onShowOverdue}
-              aria-label={`${t('sidebar.overdue', { count: overdueCount })} - ${t('sidebar.overdueHint')}`}
+              aria-label={`${label}: ${hint}`}
               className="group flex w-full items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-left ring-1 ring-red-500/40 transition hover:bg-red-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
             >
               {/* Live "needs attention" ping so overdue posts are impossible to miss
@@ -442,48 +303,37 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500/70" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
               </span>
-              <p className="min-w-0 flex-1 truncate text-xs font-bold text-red-700 dark:text-red-300">{t('sidebar.overdue', { count: overdueCount })}</p>
+              <p className="min-w-0 flex-1 truncate text-xs font-bold text-red-700 dark:text-red-300">{label}</p>
               <ChevronRight size={14} className="shrink-0 text-red-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           </Tip>
-        ) : null}
+          );
+        })() : null}
       </div>
 
       <div className="mt-auto space-y-2">
-        {/* Accounts: a calm roll-up dot + a cluster of the connected platform
-            glyphs, capped with +N so 15-20 platforms stay tidy. One click opens
-            Setup - the single home of per-lane status + reconnect - instead of a
-            second in-sidebar copy of that list. */}
-        {accounts && accountCount > 0 ? (
-          <Tip label={t('sidebar.accounts.openSetup')}>
-            <button
-              type="button"
-              onClick={() => onNavigate('setup')}
-              aria-label={t('sidebar.accounts.openSetup')}
-              className={`group flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
-            >
-              <HealthDot tone={accountsRollup} className="" />
-              <span className="flex min-w-0 flex-1 items-center gap-2">
-                {lanes.slice(0, 5).map((l) => {
-                  const Glyph = l.icon.Icon;
-                  return <Glyph key={l.id} size={15} className={`shrink-0 ${l.icon.color}`} aria-hidden="true" />;
-                })}
-                {accountCount > 5 ? <span className="text-[11px] font-bold tabular-nums text-zinc-500 dark:text-zinc-400">+{accountCount - 5}</span> : null}
-              </span>
-              <ChevronRight size={14} className="shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
-            </button>
-          </Tip>
-        ) : null}
         {/* Delivery (item 11): the sidebar row exists only for LOCAL delivery,
             where it carries the scheduler start/stop control. A cloud-managed
             client's round-the-clock status is already asserted by the header
             ConnectionStatus glyph, so the sidebar no longer restates it here. */}
         {activeOnCloud ? null : (
           <div className={`flex items-center gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-            <Monitor size={15} className={`shrink-0 ${schedulerRunning ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400'}`} aria-hidden="true" />
+            {/* Always grey: delivery running normally is an all-clear, which gets no colour (canon
+                Tier 2). The sub-line says running or paused in words. */}
+            <Monitor size={15} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs font-bold leading-tight">{t('sidebar.delivery.title')}</p>
-              <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{deliveryLocalSub}</p>
+              {/* Two unbroken fragments that wrap at the dot, so a narrow rail never cuts the
+                  last-run time mid-word ("Lokal · aktiv · Letzter La..."). */}
+              <p className="flex flex-wrap gap-x-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                <span className="whitespace-nowrap">{deliveryLocalState}</span>
+                {deliveryLastRun ? (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="whitespace-nowrap">{deliveryLastRun}</span>
+                  </>
+                ) : null}
+              </p>
             </div>
             {accounts ? <SchedulerToggle running={schedulerRunning} setupReady={setupReady} /> : null}
           </div>

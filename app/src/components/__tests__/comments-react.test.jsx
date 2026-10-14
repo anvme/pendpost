@@ -142,7 +142,10 @@ describe('CommentsPanel react control (spec 24)', () => {
     renderPanel();
     await user.click(screen.getByRole('button', { name: /^react$/i }));
     await user.click(screen.getByRole('button', { name: /^favourite$/i }));
-    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Reaction failed.');
+    expect(alert).not.toHaveTextContent(/reaction failed$/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('reaction failed');
     // The button did NOT latch to the active state on a failed react.
     expect(screen.getByRole('button', { name: /^favourite$/i })).toHaveAttribute('aria-pressed', 'false');
   });

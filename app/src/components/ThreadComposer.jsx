@@ -10,6 +10,8 @@ import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction } from '../lib/failureCopy.js';
 
 const X_LIMIT = 280;
 const DEFAULT_GAP_MIN = 2; // "2 scheduler ticks of headroom" so the fail-closed reply chain can thread.
@@ -142,7 +144,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved,
   // A frozen save run so a partial failure retries the SAME ids/text and never
   // double-creates: { ids, items:[{id, payload}], saved:Set }.
   const runRef = useRef(null);
-  const [runState, setRunState] = useState(null); // { total, saved:[ids], failed:{id,msg}|null }
+  const [runState, setRunState] = useState(null); // { total, saved:[ids], failed:{id,text,raw}|null }
   const [busy, setBusy] = useState(false);
 
   const campaignPosts = useMemo(() => campaigns.find((c) => c.id === campaign)?.posts || [], [campaigns, campaign]);
@@ -248,7 +250,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved,
         } catch (err) {
           // Stop on first failure: never create a child of a failed parent (an
           // orphan reply that would wait for a tweet that does not exist).
-          setRunState({ total: run.items.length, saved: [...run.saved], failed: { id: item.id, msg: err.message } });
+          setRunState({ total: run.items.length, saved: [...run.saved], failed: { id: item.id, ...humanizeAction(err, t, { fallbackKey: 'error.action' }) } });
           setError(t('threadComposer.partialSaved', { saved: run.saved.size, total: run.items.length }));
           return;
         }
@@ -361,7 +363,9 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved,
             ))}
             {failed ? (
               <li className="flex items-start gap-1.5 text-red-600 dark:text-red-300">
-                <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" /> {t('threadComposer.tweetFailed', { id: failed.id, msg: failed.msg })}
+                {/* One plain sentence; the server's own line rides the "?" beside it. */}
+                <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                <InfoTip label={failed.raw}>{t('threadComposer.tweetFailed', { id: failed.id, msg: failed.text })}</InfoTip>
               </li>
             ) : null}
           </ul>

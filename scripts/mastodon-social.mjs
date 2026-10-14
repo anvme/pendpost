@@ -75,7 +75,7 @@ import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { measurableInsightsPosts } from '../lib/insights-window.mjs';
 
@@ -361,6 +361,7 @@ function statusPlainText(html) {
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
     .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;|&#160;/g, ' ')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
     .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
@@ -570,10 +571,25 @@ async function cmdSchedule(args) {
       if (dueMs > now) { console.log(`[skip] ${post.id}: radar reply not due yet (${post.scheduledAt}).`); continue; }
       const body = statusText(post);
       if (!body) { RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'radar reply needs a caption' }); continue; }
-      const { radarHttp } = await import('../lib/radar.mjs');
+      const { radarHttp, mastodonReplyTarget, resolveMastodonStatusId } = await import('../lib/radar.mjs');
       // R11/N2: thread UNDER the author's follow-up status when one was captured
       // (parentExternalId), else reply to the thread root - an honest fallback, never a broken target.
-      const target = String(rr.parentExternalId || rr.externalId);
+      // An agent-found signal carries the AUTHOR-instance id: resolve it on the home instance
+      // first, and treat an unresolvable post as target-gone rather than guessing (2026-09-30).
+      let pick;
+      try {
+        pick = await mastodonReplyTarget(rr, instanceUrl(), (u) => resolveMastodonStatusId(instanceUrl(), accessToken(), u));
+      } catch (err) {
+        // The lookup itself failed (instance down, 5xx): retryable, the reply stays owed.
+        RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err) });
+        continue;
+      }
+      if (!pick.id) {
+        post.radarReplyState = 'target_gone'; await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'publish', ok: false, errorCode: 'radar_target_gone', errorMessage: 'mastodon reply target not resolvable on the home instance' });
+        continue;
+      }
+      const target = pick.id;
       const { ok, status, json } = await radarHttp(`${instanceUrl()}/api/v1/statuses`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken()}`, 'Content-Type': 'application/json' },
@@ -875,7 +891,7 @@ async function cmdInsights(args) {
       RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'insights', ok: true, id: post.mastodonStatusId, metrics });
       console.log(`[ok] ${post.id}: Mastodon ${JSON.stringify(metrics)}`);
     } catch (err) {
-      RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) });
+      RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) });
       console.log(`[warn] ${post.id}: Mastodon insights failed - ${err.message}`);
     }
   }
@@ -1222,7 +1238,7 @@ async function cmdReact(args) {
 // (the panel hints "use hashtags"), never a crash. A 429 degrades to rate_limited. Mock
 // mode NEVER reaches here (main() routes `radar` to the mock driver via MOCKABLE_COMMANDS).
 async function cmdRadar(args) {
-  const { radarOkRow, radarNeedsScopeRow, radarNotConnectedRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
+  const { radarOkRow, radarNeedsScopeRow, radarNotConnectedRow, radarRateLimitedRow, radarErrorRow, radarHttp, RADAR_LONGFORM_CHARS } = await import('../lib/radar.mjs');
   let query = {};
   try { query = args.query ? JSON.parse(String(args.query)) : {}; } catch { query = {}; }
   const base = instanceUrl();
@@ -1233,7 +1249,15 @@ async function cmdRadar(args) {
   const headers = { Authorization: `Bearer ${token}` };
   const keywords = Array.isArray(query.keywords) ? query.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
   const hashtags = Array.isArray(query.hashtags) ? query.hashtags.map((h) => String(h).replace(/^#/, '').trim()).filter(Boolean) : [];
-  const mapStatus = (s, community) => ({ source: 'mastodon', externalId: String(s.id || ''), url: s.url || s.uri || null, author: s.account?.acct || null, text: statusPlainText(s.content || ''), community: community || null, ts: s.created_at || null });
+  // bot + authorDomain feed the seam's pre-filters (lib/radar-prefilter.mjs): a self-declared bot
+  // account and a relay/bridge home domain (fed.brid.gy, flipboard.social, ...) are dropped there.
+  const hostOf = (u) => { try { return new URL(String(u)).hostname.toLowerCase(); } catch { return null; } };
+  const mapStatus = (s, community) => ({ source: 'mastodon', externalId: String(s.id || ''), url: s.url || s.uri || null, author: s.account?.acct || null, text: statusPlainText(s.content || ''), community: community || null, ts: s.created_at || null, bot: s.account?.bot === true, authorDomain: hostOf(s.account?.url) });
+  // Long-form federated objects (ActivityPub Article/Page, i.e. blog posts relayed into the
+  // fediverse) come back from search as ordinary statuses: the REST Status entity carries no
+  // object type, so their LENGTH is the tell. A 5k-76k-char essay is not a conversation anyone
+  // is asking in, and it used to flood the feed. Dropped here, before the seam ever scores it.
+  const isConversation = (row) => row.text.length <= RADAR_LONGFORM_CHARS;
   const items = [];
   let fulltextUnavailable = false; // 422: the instance ships no full-text search backend
   let authFailed = false;          // 401/403: revoked/insufficient token -> reconnect, NOT a "use hashtags" hint
@@ -1249,6 +1273,7 @@ async function cmdRadar(args) {
     if (r.ok) {
       for (const s of (r.json?.statuses || [])) {
         const row = mapStatus(s, null);
+        if (!isConversation(row)) continue;
         if (seenKeywordIds.has(row.externalId)) continue;
         seenKeywordIds.add(row.externalId);
         items.push(row);
@@ -1265,7 +1290,7 @@ async function cmdRadar(args) {
   for (const tag of hashtags) {
     const url = `${base}/api/v1/timelines/tag/${encodeURIComponent(tag)}?limit=20`;
     const r = await radarHttp(url, { headers });
-    if (r.ok) { for (const s of (Array.isArray(r.json) ? r.json : [])) items.push(mapStatus(s, `#${tag}`)); }
+    if (r.ok) { for (const s of (Array.isArray(r.json) ? r.json : [])) { const row = mapStatus(s, `#${tag}`); if (isConversation(row)) items.push(row); } }
     // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.
     else if (r.status === 429 && !items.length) { RUN.results.push(radarRateLimitedRow('mastodon', r.retryAfter)); return; }
     // A single tag's error is otherwise non-fatal (skip it); other tags + keyword items still return.
@@ -1396,7 +1421,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }

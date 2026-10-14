@@ -1,17 +1,45 @@
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
 import ClientBand from '../ClientBand.jsx';
+import PostDetail from '../PostDetail.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { bestContrastOn, parseHex } from '../../lib/theme.js';
-import { EYEBROW } from '../ui.jsx';
 
 // B4 — always-on per-client header band. ClientBand is purely presentational: it
 // is handed the active client (or null) and renders the displayName + logo/monogram
 // on an accent tint, contrast-safe foreground (bestContrastOn). It is read-only
 // signage (switching stays in the sidebar / Cmd-K), so it carries NO switch control.
+
+// PostDetail renders the band in its header; these stubs let it mount (ClientBand itself
+// reads no API).
+vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
+  useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme Retail', accent: '#22566d' }, activeClientId: 'acme' }),
+  usePendpostHealth: () => ({ data: undefined }),
+  useConfig: () => ({ data: null }),
+  useAccounts: () => ({ data: { meta: { paused: false } } }),
+  usePlatformValidate: () => ({ data: undefined }),
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePresubmitCheck: () => ({ data: undefined }),
+  useValidateMedia: () => ({ data: undefined }),
+  useAssets: () => ({ data: { dir: 'data/media', assets: [] } }),
+  approvePost: vi.fn(),
+  rejectPost: vi.fn(),
+  runPublishDue: vi.fn(),
+  deletePost: vi.fn(),
+  unschedulePost: vi.fn(),
+  reschedulePost: vi.fn(),
+  markPosted: vi.fn(),
+  verifyPost: vi.fn(),
+  setCoverFrame: vi.fn(),
+  uploadCover: vi.fn(),
+  clearCover: vi.fn(),
+  updatePost: vi.fn(),
+}));
 
 function renderBand(props = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -65,21 +93,25 @@ describe('ClientBand', () => {
     expect(() => renderBand({ client: undefined })).not.toThrow();
   });
 
-  it('renders the no-client eyebrow with the canonical EYEBROW token (no 11px fork)', () => {
-    renderBand({ client: null });
-    const eyebrow = screen.getByText(/active project/i);
-    expect(eyebrow.className).toBe(EYEBROW);
+  // Phase 3 D13: the "Active project" micro-label is gone. The accent-tinted band with the
+  // project's avatar and name is the signage; the label only restated it (and already hid
+  // below lg without any loss). Screen readers keep the full sentence via aria-label.
+  it('shows no "Active project" label, only the project; the group name keeps the meaning', () => {
+    renderBand({ client: ACME });
+    expect(screen.queryByText(/active project/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Acme Retail')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /active project: acme retail/i })).toBeInTheDocument();
   });
 
-  it('renders the active eyebrow at the canonical 11px and never dims the contrast-safe fg with opacity', () => {
-    renderBand({ client: ACME });
-    const eyebrow = screen.getByText(/active project/i);
-    // Size matches the EYEBROW token (11px), not the old 10px fork.
-    expect(eyebrow.className).toContain('text-[11px]');
-    expect(eyebrow.className).not.toContain('text-[10px]');
-    // opacity-80 erodes bestContrastOn below AA on a validated mid-tone accent: gone.
-    expect(eyebrow.className).not.toContain('opacity-80');
-    expect(eyebrow.className).not.toMatch(/opacity-/);
+  it('the no-client state says only "No project selected", no label in front of it', () => {
+    renderBand({ client: null });
+    expect(screen.queryByText(/active project/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /no project/i })).toHaveTextContent(/^No project selected$/);
+  });
+
+  it('never dims the contrast-safe fg with opacity', () => {
+    const { container } = renderBand({ client: ACME });
+    expect([...container.querySelectorAll('*')].some((el) => /(^|\s)opacity-/.test(el.getAttribute('class') || ''))).toBe(false);
   });
 
   it('has no axe violations (active client)', async () => {
@@ -90,5 +122,30 @@ describe('ClientBand', () => {
   it('has no axe violations (no client)', async () => {
     const { container } = renderBand({ client: null });
     expect(await axeClean(container)).toHaveNoViolations();
+  });
+});
+
+describe('PostDetail header project (D13)', () => {
+  it('names the project without the "Aktives Projekt" label', () => {
+    const post = {
+      id: 'p1', campaign: 'launch', caption: 'Hallo', platforms: ['linkedin'], approval: 'approved', status: 'planned',
+      scheduledAt: '2099-06-01T10:00:00Z', type: 'text', rev: 1, executionMode: 'fully-scheduled', image: null, ids: {},
+      derivedState: 'waiting-due', media: { file: null, exists: false, items: [] },
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider locale="de-CH">
+          <TooltipProvider>
+            <ConfirmProvider>
+              <PostDetail post={post} onClose={() => {}} onEdit={() => {}} onNavigate={() => {}} />
+            </ConfirmProvider>
+          </TooltipProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    const header = screen.getByRole('dialog').querySelector('header');
+    expect(header).toHaveTextContent('Acme Retail');
+    expect(header).not.toHaveTextContent('Aktives Projekt');
   });
 });

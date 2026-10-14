@@ -4,6 +4,8 @@ import { ListPlus, PlusCircle, ShieldAlert, AlertCircle, CheckCircle2 } from 'lu
 import { useYoutubePlaylists, createYoutubePlaylist, addToYoutubePlaylist } from '../lib/api.js';
 import { INNER_SURFACE, FIELD, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import { useT } from '../lib/i18n.js';
+import { humanizeAction, humanizeCheck } from '../lib/failureCopy.js';
+import InfoTip from './ui/InfoTip.jsx';
 
 // YouTube "Add to playlist" picker (spec 15, Pattern P3+P4+P9). Rendered as a
 // <Section> inside PostDetail's bodyLeft when the operator opens it from the ⋯
@@ -14,6 +16,10 @@ import { useT } from '../lib/i18n.js';
 // panel refetch so a fresh playlist's itemCount updates. Every state is icon+text
 // (never color-only).
 const PRIVACY_OPTIONS = ['public', 'unlisted', 'private'];
+// Every failure here is ONE plain sentence ({ text, raw }); the raw server or YouTube line
+// rides the house "?" beside it, never inline. `lane` lets a YouTube refusal (an expired
+// connection, a rate limit) say its own connection sentence.
+const actionAlert = (err, t) => humanizeAction(err, t, { fallbackKey: 'error.action', lane: 'youtube' });
 
 export default function PlaylistPanel({ campaign, postId, enabled = true }) {
   const t = useT();
@@ -31,6 +37,10 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
   const [justCreated, setJustCreated] = useState(null); // { id, title } | null
 
   const playlists = data?.playlists || [];
+  // A failed read: the heading says it could not load; a known cause (an expired YouTube
+  // connection) adds its plain sentence, and the engine's raw line rides the "?" only.
+  const loadRaw = typeof (data?.message || data?.error) === 'string' ? (data.message || data.error) : null;
+  const loadAlert = humanizeCheck({ message: loadRaw, code: data?.code, lane: 'youtube' }, t);
   // The just-created-but-not-yet-added playlist may not be in the refetched list
   // yet - merge it in so it is immediately selectable for the retry.
   const options = justCreated && !playlists.some((p) => p.id === justCreated.id)
@@ -54,7 +64,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
       const res = await addToYoutubePlaylist(playlist.id, { campaign, postId });
       afterAdd(playlist.title, res.duplicate === true);
     } catch (err) {
-      setError(err?.message || t('postDetail.error.generic'));
+      setError(actionAlert(err, t));
     } finally {
       setBusy(false);
     }
@@ -74,7 +84,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
     try {
       made = await createYoutubePlaylist(trimmed, undefined, privacy);
     } catch (err) {
-      setError(err?.message || t('postDetail.error.generic'));
+      setError(actionAlert(err, t));
       setBusy(false);
       return;
     }
@@ -84,7 +94,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
       setTitle('');
       setCreating(false);
     } catch (err) {
-      setError(err?.message || t('postDetail.error.generic'));
+      setError(actionAlert(err, t));
       setJustCreated({ id: made.id, title: made.title || trimmed });
       setSelected(made.id);
       setTitle('');
@@ -102,10 +112,13 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
       {isLoading ? (
         <div className={`h-10 animate-pulse rounded-xl ${INNER_SURFACE}`} aria-hidden="true" />
       ) : isError || data?.ok === false || data?.error ? (
-        <p role="alert" className={`flex flex-wrap items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs text-red-600 dark:text-red-300 ${INNER_SURFACE}`}>
-          <AlertCircle size={13} aria-hidden="true" /> {t('postDetail.playlist.error')}
-          {(data?.message || data?.error) ? <span className="text-zinc-500 dark:text-zinc-400">{data.message || data.error}</span> : null}
-        </p>
+        <div className={`flex flex-wrap items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs text-red-600 dark:text-red-300 ${INNER_SURFACE}`}>
+          <p role="alert" className="flex flex-wrap items-center gap-1.5">
+            <AlertCircle size={13} aria-hidden="true" /> {t('postDetail.playlist.error')}
+            {loadAlert.text ? <span className="text-zinc-500 dark:text-zinc-400">{loadAlert.text}</span> : null}
+          </p>
+          <InfoTip label={loadAlert.raw} />
+        </div>
       ) : data?.needsScope ? (
         <div className={`space-y-1 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
           <p className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
@@ -187,9 +200,12 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
             </p>
           ) : null}
           {error ? (
-            <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-              <AlertCircle size={11} aria-hidden="true" /> {error}
-            </p>
+            <div className="flex items-start gap-1">
+              <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
+                <AlertCircle size={11} aria-hidden="true" /> {error.text}
+              </p>
+              <InfoTip label={error.raw} />
+            </div>
           ) : null}
         </div>
       )}

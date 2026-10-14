@@ -11,6 +11,8 @@ import { Switch } from './ui/Switch.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 import { PROJECT_CHIP } from './ui/recipes.js';
 import { ClientAvatar } from './ClientSwitcher.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction, laneLabel } from '../lib/failureCopy.js';
 
 // The metered-read lane: X bills per metric read (METERED_READ_LANES, lib/insights.mjs),
 // so it is never swept in the background unless opted in, and a manual "everything" read
@@ -39,6 +41,26 @@ function classifyXFetch(results) {
 // scope, a reconnect fixes nothing here - the fix is to ENABLE the API - so this is
 // classified apart and surfaced with an "enable" link, never the reconnect copy. Returns
 // the activation URL (or '' when the row carried none) so the caller can render, or null.
+// The lanes a refresh could not update (the server's failedLanes), as display names. X has
+// its own status line (XStatusNote) and a disabled Google API has its own "turn on" line, so
+// both are left out here: one line per issue, never the same lane twice.
+function partialLaneNames(res) {
+  const failed = Array.isArray(res?.failedLanes) ? res.failedLanes : [];
+  return [...new Set(failed
+    .filter((f) => f && f.lane !== METERED_LANE && f.reason !== 'api_disabled')
+    .map((f) => laneLabel(f.lane)))];
+}
+
+// The lanes that have not refreshed for more than 2 days (getInsights().stale), as
+// "LinkedIn since 10.10.2026". The page never shows an old figure as if it were current.
+const STALE_DAYS = 2;
+function staleLaneText(stale, t) {
+  return (Array.isArray(stale) ? stale : [])
+    .filter((s) => s && s.lane)
+    .map((s) => t('insights.stale.lane', { lane: laneLabel(s.lane), date: new Date(s.since).toLocaleDateString(dateLocale(), { dateStyle: 'medium' }) }))
+    .join(', ');
+}
+
 function apiDisabledHelp(results) {
   const row = (results || []).find((r) => r && r.ok === false && r.error === 'api_disabled');
   if (!row) return null;
@@ -629,6 +651,8 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
   // analytics off in the GCP project); '' = api_disabled with no URL; null = no such
   // failure. A free-lane failure, so it is set on BOTH scopes, unlike the X status above.
   const [apiDisabledUrl, setApiDisabledUrl] = useState(null);
+  // The lanes the last refresh could not update (display names), or [] when every lane did.
+  const [partialLanes, setPartialLanes] = useState([]);
   const [allBusy, setAllBusy] = useState(false);
   const [xToggleBusy, setXToggleBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -656,9 +680,11 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
   const runFetch = async (scope) => {
     setXFetchState(null);
     setApiDisabledUrl(null);
+    setPartialLanes([]);
     setSettingsError(null);
+    let res;
     try {
-      const res = await fetchInsights({ scope });
+      res = await fetchInsights({ scope });
       queryClient.invalidateQueries({ queryKey: ['insights'] });
       queryClient.invalidateQueries({ queryKey: ['digest'] });
       if (scope === 'all') setXFetchState(classifyXFetch(res?.results));
@@ -669,6 +695,11 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
       if (err?.code === 'in_flight') { setXFetchState('in_flight'); throw { canceled: true }; }
       throw err;
     }
+    // A refresh where any lane failed must not flash "Refreshed": the button settles back to
+    // idle and the note line below names the lanes instead. Every lane fine: the success flash.
+    const failedAny = Array.isArray(res?.failedLanes) && res.failedLanes.length > 0;
+    setPartialLanes(partialLaneNames(res));
+    if (failedAny) throw { canceled: true };
   };
   const refreshFree = () => runFetch('free');
   const refreshEverything = async () => {
@@ -702,7 +733,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
       await saveConfig(config?.rev, { posting: { insights: { meteredAuto: next ? [METERED_LANE] : [] } } });
       queryClient.invalidateQueries({ queryKey: ['config'] });
     } catch (err) {
-      setSettingsError(err?.message || t('insights.settings.saveError'));
+      setSettingsError(humanizeAction(err, t, { fallbackKey: 'insights.settings.saveError' }));
     } finally {
       setXToggleBusy(false);
     }
@@ -713,6 +744,8 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
   // strips hide in this mode. A per-client read failure rides the inline notice below,
   // never the page-level error.
   const isLoading = allClients ? allLoading : singleLoading;
+  // The page-level read failure as one plain sentence ({ text, raw }); raw is for the "?".
+  const readError = !allClients && isError ? humanizeAction(error, t, { fallbackKey: 'insights.error.fallback' }) : null;
   const [digestOpen, setDigestOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   // metricLabels travels in the envelope as a stable English reference. Display
@@ -826,6 +859,22 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
         <XStatusNote state={xFetchState} xConnected={xConnected} xOptedIn={xOptedIn} portalUrl={xPortalUrl} onNavigate={onNavigate} t={t} />
       ) : null}
 
+      {/* Partial refresh: the lanes the last refresh could not update, one muted line in the
+          same slot as the X and disabled-API notes. The reasons live on their Activity rows. */}
+      {!allClients && staleLaneText(data?.stale, t) ? (
+        <p data-testid="insights-stale" className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+          <AlertTriangle size={12} className="text-amber-500" aria-hidden="true" />
+          <span>{t('insights.stale', { days: STALE_DAYS, lanes: staleLaneText(data?.stale, t) })}</span>
+        </p>
+      ) : null}
+
+      {!allClients && partialLanes.length ? (
+        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+          <AlertTriangle size={12} className="text-amber-500" aria-hidden="true" />
+          <span>{t('insights.refresh.partial', { lanes: partialLanes.join(', ') })}</span>
+        </p>
+      ) : null}
+
       {/* Disabled-API status (YouTube analytics off in the GCP project): the honest
           reason the audience block is missing, with a link straight to enabling the API -
           NOT a reconnect, which fixes nothing here. Muted single line, like the X status. */}
@@ -866,8 +915,10 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
           <div className="max-w-xs space-y-3 text-center">
             <AlertTriangle size={26} className="mx-auto text-red-500" aria-hidden="true" />
             <p className="text-sm font-bold">{t('insights.error.title')}</p>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              {error?.message || t('insights.error.fallback')}
+            {/* One plain sentence; the read's raw (English) error rides the "?" beside it. */}
+            <p className="flex items-start justify-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <span>{readError.text}</span>
+              <InfoTip label={readError.raw} />
             </p>
             <div className="flex justify-center">
               <ActionButton
@@ -1140,8 +1191,12 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
                   ariaLabel={t('insights.settings.xLabel')}
                 />
               </div>
+              {/* The plain sentence is the alert; the server's raw line rides the "?" beside it. */}
               {settingsError ? (
-                <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{settingsError}</p>
+                <div className="flex items-start gap-1">
+                  <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{settingsError.text}</p>
+                  <InfoTip label={settingsError.raw} />
+                </div>
               ) : null}
             </div>
           ) : null}

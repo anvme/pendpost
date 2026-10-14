@@ -74,7 +74,7 @@ import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { effectivePublicUrl, effectiveSlideUrl, deadMediaUrlDiagnosis } from '../lib/public-media.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure, isFetchFailure } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -233,6 +233,10 @@ async function ensureFreshToken({ force = false } = {}) {
   try {
     data = await tokenExchange({ grant_type: 'refresh_token', refresh_token: refreshToken });
   } catch (err) {
+    // Offline (DarkWake, no network) is not an expired refresh token: say we could not reach
+    // Pinterest, with the cause, so neither the insights sweep nor the publish hold reads it as a
+    // sign-in problem.
+    if (isFetchFailure(err)) throw new Error(`Pinterest could not reach Pinterest to renew access: ${describeFetchFailure(err)}`);
     throw new Error(`Pinterest token refresh failed (${err.message}). The refresh token likely expired or was revoked - re-run 'node scripts/pinterest-social.mjs auth'.`);
   }
   const vars = persistTokens(data);
@@ -882,7 +886,7 @@ async function cmdInsights(args) {
       });
       RUN.results.push({ postId: post.id, platform: 'pinterest', action: 'insights', ok: true, metrics: data, id: post.pinId });
     } catch (err) {
-      RUN.results.push({ postId: post.id, platform: 'pinterest', action: 'insights', ok: false, errorCode: 'insights_unavailable', errorMessage: String(err.message || err).slice(0, 200), id: post.pinId });
+      RUN.results.push({ postId: post.id, platform: 'pinterest', action: 'insights', ok: false, errorCode: 'insights_unavailable', errorMessage: describeFetchFailure(err).slice(0, 200), id: post.pinId });
     }
   }
 }
@@ -929,7 +933,7 @@ async function cmdDemographics() {
   try {
     token = await ensureFreshToken();
   } catch (err) {
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 200) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 200) }));
     return;
   }
   try {
@@ -941,7 +945,7 @@ async function cmdDemographics() {
       console.log('[warn] demographics: Pinterest ads/business access (ads:read) not granted - no audience data available yet.');
       return;
     }
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 200) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 200) }));
     console.log(`[warn] demographics failed: ${String(err.message || err).slice(0, 200)}`);
   }
 }
@@ -1280,7 +1284,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }

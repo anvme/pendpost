@@ -66,7 +66,7 @@ describe('Composer - the Image URL field (spec 39)', () => {
   it('renders for an instagram type=image post, with the vouching hint', () => {
     renderComposer(post());
     expect(screen.getByLabelText('Image URL (public)')).toBeInTheDocument();
-    expect(screen.getByText(/make sure it serves the same image/)).toBeInTheDocument();
+    expect(screen.getByText(/Make sure it serves the same image/)).toBeInTheDocument();
   });
 
   it('renders for pinterest regardless of type (video pins need the cover URL)', () => {

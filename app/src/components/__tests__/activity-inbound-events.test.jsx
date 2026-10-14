@@ -237,3 +237,29 @@ describe('inbound-event reply (spec 23 close-the-loop)', () => {
     expect(screen.getByRole('button', { name: /^send$/i })).toBeDisabled();
   });
 });
+
+// The raw-error sweep: a generic failed inbound reply is one plain sentence; the server's
+// English line rides the house "?" beside it, never inline.
+describe('inbound reply failures speak a plain sentence', () => {
+  it('a message-less generic failure still shows the plain sentence', async () => {
+    replyMock.mockRejectedValue(new Error());
+    inboundState.data = { ok: true, events: [MENTION] };
+    renderActivity();
+    fireEvent.click(screen.getByRole('button', { name: /^reply$/i }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hi' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That did not go through. Try again.');
+  });
+
+  it('an English server line is not inline; it is the "?" description', async () => {
+    replyMock.mockRejectedValue(new Error('inbound reply failed: HTTP 500 internal'));
+    inboundState.data = { ok: true, events: [MENTION] };
+    renderActivity();
+    fireEvent.click(screen.getByRole('button', { name: /^reply$/i }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hi' } });
+    fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('inbound reply failed: HTTP 500 internal');
+  });
+});

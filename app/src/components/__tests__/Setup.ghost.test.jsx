@@ -22,6 +22,7 @@ const ghostNewsletterUpdateMock = vi.fn(() => Promise.resolve({ ok: true, id: 'a
 vi.mock('../../lib/api.js', () => ({
   // WP6: Setup reads the radar capability table for the per-card scan switch
   useSignals: () => ({ data: undefined, isLoading: false }),
+  usePlans: () => ({ data: undefined }),
   usePendpostHealth: () => ({
     data: {
       ok: true, ready: false,
@@ -132,6 +133,18 @@ describe('Setup — Ghost audience + newsletter controls (spec 30)', () => {
     expect(archiveButtons).toHaveLength(1);
     await user.click(archiveButtons[0]);
     await waitFor(() => expect(ghostNewsletterUpdateMock).toHaveBeenCalledWith({ id: 'aaaaaaaaaaaaaaaaaaaaaaaa', status: 'archived' }));
+  });
+
+  it('a failed archive says one plain sentence; the raw engine line only behind the "?"', async () => {
+    ghostNewsletterUpdateMock.mockRejectedValueOnce(new Error('ghost: PUT /newsletters: HTTP 422 GHOST_ADMIN_API_KEY ValidationError'));
+    const { container } = renderSetup();
+    const user = await expandGhostCard();
+    await user.click(screen.getByRole('button', { name: 'Archive' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Could not save. Reload and try again.'));
+    const visible = container.cloneNode(true);
+    visible.querySelectorAll('.sr-only').forEach((n) => n.remove());
+    expect(visible.textContent).not.toMatch(/HTTP 422|GHOST_ADMIN_API_KEY|ValidationError/);
+    expect(screen.getByText(/HTTP 422/)).toHaveClass('sr-only');
   });
 
   it('the archived newsletter row offers an Activate toggle; activating calls ghost_newsletter_update', async () => {

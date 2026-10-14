@@ -39,6 +39,16 @@ let JSON_MODE = false;
 // rate_limited, a session failure to needs_scope - never a throw (P9). Keywords +
 // hashtags each get their OWN searchPosts call (see the loop). Mock mode NEVER reaches
 // here (main() routes `radar` to the mock driver via MOCKABLE_COMMANDS).
+// The searchPosts request for ONE term (2026-09-30). A query with a `lang` ("de", "de-CH") asks
+// Bluesky for posts in that language only (searchPosts' own `lang` filter, sent as the bare
+// language code), so a German search stops returning English and Spanish posts that share a
+// product name. No lang = every language, exactly as before. Exported so a test can assert it.
+export function bskySearchUrl(pds, term, lang) {
+  const code = typeof lang === 'string' && lang.trim() ? lang.trim().toLowerCase().split(/[-_]/)[0] : '';
+  const params = { q: term, limit: '25', ...(/^[a-z]{2,3}$/.test(code) ? { lang: code } : {}) };
+  return `${pds}/xrpc/app.bsky.feed.searchPosts?${new URLSearchParams(params).toString()}`;
+}
+
 export async function cmdRadar(args) {
   const { radarOkRow, radarNeedsScopeRow, radarNotConnectedRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
   let query = {};
@@ -92,7 +102,7 @@ export async function cmdRadar(args) {
   let lastError = null;   // transient/other search failure (5xx etc.)
   let anySearchOk = false;
   for (const q of terms) {
-    const url = `${pds}/xrpc/app.bsky.feed.searchPosts?${new URLSearchParams({ q, limit: '25' }).toString()}`;
+    const url = bskySearchUrl(pds, q, query.lang);
     const { ok, status, json, retryAfter, error } = await radarHttp(url, { headers: { Authorization: `Bearer ${jwt}` } });
     if (!ok) {
       // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.

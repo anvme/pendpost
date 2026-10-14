@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, LayoutGrid, List, Info, CornerUpLeft, ExternalLink, Wrench, ArrowDown, ArrowUp, Send, Bot, Copy, Check, Link2 } from 'lucide-react';
-import { approvePost, rejectPost, markPosted, useAccounts, usePendpostHealth, useConfig, usePlatformValidate, errText } from '../lib/api.js';
-import { fmtFull, fmtStampShort, campaignBaseLabel, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, isActionable, nextActorOf, effectiveLaneText, handOffTarget, isAbsoluteHttpUrl } from '../lib/format.js';
-import { CoverThumb, LinkCardPreview, PlatformIcons, NextActorChip, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl, PlatformBlockers } from './ui.jsx';
+import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, LayoutGrid, List, Info, CornerUpLeft, ExternalLink, PlugZap, ArrowDown, ArrowUp, Send, Bot, Copy, Check, Link2 } from 'lucide-react';
+import { approvePost, rejectPost, markPosted, useAccounts, usePendpostHealth, useConfig, usePlatformValidate } from '../lib/api.js';
+import { fmtFull, fmtStampShort, campaignBaseLabel, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, blockedLanes, isActionable, nextActorOf, postDisplayState, effectiveLaneText, handOffTarget, isAbsoluteHttpUrl } from '../lib/format.js';
+import { CoverThumb, LinkCardPreview, showsLinkedinCard, PlatformIcons, NextActorChip, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl, PlatformBlockers } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
-import { PROJECT_CHIP } from './ui/recipes.js';
+import { PROJECT_CHIP, TAP_TARGET_Y } from './ui/recipes.js';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { GateMark } from './ui/GateMark.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
@@ -21,9 +21,35 @@ import LiveLaneLinks from './ui/LiveLaneLinks.jsx';
 import DestinationStrip from './ui/DestinationStrip.jsx';
 import { usePrompt } from './ui/confirm.jsx';
 import { ReviewStatusChip } from './ReviewLink.jsx';
+import InfoTip from './ui/InfoTip.jsx';
 import { useT } from '../lib/i18n.js';
+import { humanizeAction, plainError } from '../lib/failureCopy.js';
 
 const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
+
+// A failed action's lasting alert, the Setup anatomy: the plain sentence ({ text, raw } from
+// humanizeAction) is the alert, and the raw server or engine line rides the house "?" beside
+// it, never inline. `guardAction` wraps a button's action so the alert is built from the
+// thrown error itself (ActionButton's onError only hands over its message, or null when it
+// had none), then rethrows so the button still flashes its own error state.
+function ActionError({ error, className = '' }) {
+  if (!error) return null;
+  return (
+    <div className={`flex items-start gap-1 ${className}`}>
+      <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
+const actionAlert = (err, t) => humanizeAction(err, t, { fallbackKey: 'error.action' });
+const guardAction = (fn, setError, t) => async () => {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err?.canceled !== true) setError(actionAlert(err, t));
+    throw err;
+  }
+};
 const keyOf = (post) => `${post.campaign}-${post.id}`;
 
 // Sort direction is a per-TAB preference, because the two tabs are different objects:
@@ -178,13 +204,17 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
         onActed?.(post);
       })
       .catch((err) => {
-        if (err?.canceled !== true) setError(err?.message || t('approvals.action.error'));
+        if (err?.canceled !== true) setError(actionAlert(err, t));
       })
       .finally(() => {
         keyBusyRef.current = false;
       });
   };
   const headline = (post.title && post.title.trim()) || firstLine(post.caption) || t('approvals.card.untitled');
+  // The headline already names the post, so the meta line carries only the campaign's human
+  // label: the raw post id is an infrastructure slug ("tg-review"). The raw campaign / post
+  // ids stay on the meta's hover title for the operator who needs them.
+  const rawIds = `${post.campaign} / ${post.id}`;
   // The caption BODY reviewers read before approving. When the headline already
   // is the first caption line (no title), show the rest of the caption beyond it
   // so the body is never just a duplicate of the headline; when a title supplies
@@ -197,12 +227,6 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     const rest = cap.slice(cap.indexOf(first) + first.length).trim();
     return rest;
   })();
-  // text/article posts carry no media; reuse the LinkCardPreview so the reviewer
-  // sees the real card shape inline. Media-backed posts keep the lightweight
-  // CoverThumb poster path (reserve the heavy <video> for PostDetail) to avoid N
-  // video elements on a long queue.
-  const isTextPost = post.type === 'text';
-
   // The Reject/Approve action group - shared by BOTH the comfortable and compact
   // layouts. On success each routes through onActed so the parent advances focus
   // to the next item. Approve is always immediate (button, keyboard and bulk);
@@ -231,7 +255,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   }, [platformValidate]);
   const hasHardBlockers = blockerReasons.length > 0;
   // The first blocker as a one-line reason for the disabled button's tooltip/aria-label.
-  const blockedReason = hasHardBlockers ? `${PLATFORM_META[blockerReasons[0].platform]?.label || blockerReasons[0].platform} - ${blockerReasons[0].problem}` : '';
+  const blockedReason = hasHardBlockers ? `${PLATFORM_META[blockerReasons[0].platform]?.label || blockerReasons[0].platform}: ${blockerReasons[0].problem}` : '';
   // The proactive blocker panel (canon: no dead ends; errors answer what/why/how). Reuses the
   // SAME PlatformBlockers PostDetail renders, so the queue and the detail speak one language;
   // it self-hides when clean and only shows here when a hard blocker exists. onFix opens the
@@ -267,8 +291,8 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     const text = texts.length === 1 ? texts[0] : (post.caption || '').trim();
     try {
       if (text) await navigator.clipboard.writeText(text);
-    } catch {
-      setError(t('approvals.action.error'));
+    } catch (err) {
+      setError(actionAlert(err, t));
       return;
     }
     setCopied(true);
@@ -287,7 +311,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     // Client-side gate (F3): the same absolute-http(s) rule the server enforces,
     // refused with the localized message BEFORE the send - the raw English engine
     // string never leads on this surface. The typed value survives, resubmittable.
-    if (!isAbsoluteHttpUrl(handOffUrl)) { setHandOffError(t('radar.copyPosted.linkInvalid')); return; }
+    if (!isAbsoluteHttpUrl(handOffUrl)) { setHandOffError({ text: t('radar.copyPosted.linkInvalid'), raw: null }); return; }
     setHandOffSaving(true);
     setHandOffError(null);
     try {
@@ -301,7 +325,8 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
       setHandOffUrl('');
       setHandOffSaving(false);
     } catch (e) {
-      setHandOffError(e?.message || t('radar.copyPosted.failed'));
+      // One plain sentence; the server's own line rides the "?" beside it (humanizeAction).
+      setHandOffError(humanizeAction(e, t, { fallbackKey: 'radar.copyPosted.failed' }));
       setHandOffSaving(false);
     }
   };
@@ -331,37 +356,26 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   // of it: with the lane unconnected, approving publishes nothing, so the card offers the action
   // that works - copy the text and open the destination. Same slot, same size, one button.
   const approveButton = offlineLanes.length ? (
-    <>
-      <Tip label={t('approvals.card.copyOpenTip', { platform: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}>
+    <Tip label={t('approvals.card.copyOpenTip', { platform: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}>
         <button
           type="button"
           onClick={onCardHandOff}
           aria-live="polite"
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-sky-500/15 px-2.5 py-1.5 text-xs font-bold text-sky-700 transition hover:bg-sky-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-sky-300"
+          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-sky-500/15 px-2.5 py-1.5 text-center text-xs font-bold text-sky-700 transition hover:bg-sky-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-sky-300"
         >
           {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-          {copied ? t('radar.reply.copied') : t('radar.reply.copyOpen')}
+          {/* The reply wording ("... & Thread öffnen") is for a Radar reply only: a normal
+              planned post has no thread, so it reads PostDetail's generic hand-off label
+              (onCardHandOff already opens the compose/submit page for it, not a thread). */}
+          {post.radarReplyTo
+            ? (copied ? t('radar.reply.copied') : t('radar.reply.copyOpen'))
+            : (copied ? t('postDetail.handOff.copySuccess') : t('postDetail.handOff.copyIdle'))}
         </button>
-      </Tip>
-      {/* The no-dead-end escape hatch beside the hand-off: a quiet wrench (the same
-          "set up this lane" glyph PlatformBlockers uses) deep-linking to the lane's
-          Setup card, so "not connected" always carries its own fix. */}
-      {typeof onNavigate === 'function' ? (
-        <Tip label={t('approvals.card.connectTip', { platforms: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}>
-          <button
-            type="button"
-            onClick={() => onNavigate('setup', offlineLanes[0])}
-            aria-label={t('approvals.card.connectTip', { platforms: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}
-            className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
-          >
-            <Wrench size={14} aria-hidden="true" />
-          </button>
-        </Tip>
-      ) : null}
-    </>
+    </Tip>
   ) : (
     <ActionButton
       variant="primary"
+      className="justify-center"
       icon={reviewRequired ? Send : CheckCircle2}
       // Content-readiness gate: a post the engine would refuse (e.g. a Mastodon caption over
       // 500 chars) shows the button DISABLED with the reason a hover away, instead of letting
@@ -377,12 +391,11 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
         // awaiting chip below is its confirmation.
         ? { idle: t('review.action.sendForSignoff'), loading: t('review.action.sending'), success: t('review.action.sent'), error: t('approvals.action.error') }
         : { idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
-      onError={setError}
-      onAction={async () => {
+      onAction={guardAction(async () => {
         await doApprove();
         playClear();
         onActed?.(post);
-      }}
+      }, setError, t)}
     />
   );
   // Posted = linked (chip 3): a posted-family card in the "Alle Beitraege" view
@@ -414,17 +427,25 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     </span>
   ) : null;
 
+  // The comfortable card's action group: below sm it takes its own full-width row as two
+  // equal columns (Reject | the approve slot), so the pair reads as one aligned row instead
+  // of the three ragged right-aligned rows the long hand-off label used to cause at 375px; a
+  // long label wraps inside its own button. The overflow stays on the chip row above it.
+  // From sm up it is the plain right-aligned group. The compact row keeps its rigid one-line
+  // group (its headline truncates instead).
   const actions = actionable ? (
-    <span className="flex shrink-0 items-center gap-1.5">
+    <span className={compact ? 'flex shrink-0 items-center gap-1.5' : 'grid min-w-0 grid-cols-2 gap-1.5 max-sm:order-last max-sm:basis-full sm:flex sm:flex-wrap sm:items-center sm:justify-end'}>
+      {/* D12: reject is reversible (a verdict, the post can be approved again), so it is the
+          quiet neutral button, never the red "cannot be undone" tone. */}
       <ActionButton
-        variant="danger"
+        variant="subtle"
+        className="justify-center"
         icon={XCircle}
         labels={{ idle: t('approvals.action.reject'), loading: t('approvals.action.rejecting'), success: t('approvals.action.rejected'), error: t('approvals.action.error') }}
-        onError={setError}
-        onAction={async () => {
+        onAction={guardAction(async () => {
           await doReject();
           onActed?.(post);
-        }}
+        }, setError, t)}
       />
       {approveButton}
     </span>
@@ -449,8 +470,8 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
 
   // Contextual icon-badges (archived / warmth advisory) - rare signals worth
   // keeping in BOTH layouts. The old "Automatisch freigegeben" badge is gone: the
-  // auto-approve PROVENANCE now rides the scheduled chip's tooltip (NextActorChip),
-  // so the card states one next-actor truth instead of stacking a third badge.
+  // card states one next-actor truth (NextActorChip) instead of stacking a third
+  // badge, and the auto-approve provenance lives in Activity (the approve row's actor).
   const contextBadges = (
     <>
       {archived ? <IconBadge icon={Archive} tone="neutral" text={t('approvals.card.archived')} label={t('approvals.card.archivedLabel')} /> : null}
@@ -469,6 +490,39 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   // clamp (a reviewPending post never reads overdue-red) is folded into
   // nextActorOf itself.
   const nextActor = nextActorOf(post, setup);
+  // The Blockiert reason, on screen: one quiet line that says what is wrong and names the fix
+  // in the delivery row's words ("Telegram ist nicht verbunden · Telegram verbinden"); the verb
+  // IS the connect route to that lane's Setup card. D7 (phase 3): the reason used to live only
+  // in the pill's hover; it now leads this same line, so the card gains no row. Only for a
+  // lane meant to publish (blockedLanes): a manual paste lane alone reads "Du postest selbst"
+  // and its hand-off is the path. On a comfortable card it lines up with the text column and,
+  // from sm up, lifts into the blank space the taller cover leaves under the meta, so it reads
+  // as the meta's next line.
+  const connectLanes = nextActor.key === 'blocked' ? blockedLanes(post, setup) : [];
+  const connectNames = connectLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ');
+  const connectLine = connectLanes.length ? (
+    // The indent is subtracted from the width (max-w-full plus ml-[76px] ran 76px past the
+    // card at 375px, truncating the reason and pushing the verb off it), and the line wraps:
+    // on a phone the verb drops under the reason instead of leaving the card.
+    <p className={`flex min-w-0 flex-wrap items-center gap-x-1 self-start text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 ${compact ? 'max-w-full' : 'ml-[76px] max-w-[calc(100%-76px)] sm:-mt-6'}`}>
+      <PlugZap size={12} className="shrink-0" aria-hidden="true" />
+      <span className="min-w-0">
+        {t(connectLanes.length > 1 ? 'freigaben.blocked.reasonMany' : 'freigaben.blocked.reason', { platforms: connectNames })}
+      </span>
+      {typeof onNavigate === 'function' ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            onClick={() => onNavigate('setup', connectLanes[0])}
+            className={`${TAP_TARGET_Y} shrink-0 rounded-md transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:text-zinc-100`}
+          >
+            {t('approvals.card.connect', { platforms: connectNames })}
+          </button>
+        </>
+      ) : null}
+    </p>
+  ) : null;
   // Issue 6: the ONLY visual addition all-clients mode makes to a card - a small
   // client chip, shown exactly when the merge stamped one (single-client mode
   // never sets post.clientName, so this renders nothing there). Avatar carries
@@ -483,7 +537,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     <span className="flex shrink-0 items-center gap-1">
       <ReviewStatusChip post={post} />
       {nextActor.key === 'overdue' || nextActor.key === 'publish-failed'
-        ? <StatusPill state={nextActor.key} short />
+        ? <StatusPill state={nextActor.key === 'publish-failed' ? postDisplayState(post) : nextActor.key} short />
         : <NextActorChip post={post} setup={setup} />}
     </span>
   );
@@ -545,14 +599,15 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
                 {' · '}
                 {t(`type.${post.type}`)}
               </span>
-              <span className="hidden min-w-0 truncate text-zinc-500 sm:inline dark:text-zinc-400">
-                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
+              <span className="hidden min-w-0 truncate text-zinc-500 sm:inline dark:text-zinc-400" title={rawIds}>
+                {t('approvals.card.campaign', { campaign: campaignBaseLabel(post.campaign) })}
               </span>
               {clientChip}
+              {connectLine}
             </div>
             {handOffCapture}
             {readinessBlockers}
-            {error ? <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
+            <ActionError error={error} />
           </div>
         </>
       ) : (
@@ -565,8 +620,10 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
           >
             <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className="h-24 w-16 shrink-0 rounded-lg" />
             <span className="flex min-w-0 flex-1 flex-col gap-1">
-              <span className="flex items-start justify-between gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm font-bold">{headline}</span>
+              {/* Below sm the pill stacks under the headline: side by side at 375px it
+                  squeezed the headline to four characters ("How…"). */}
+              <span className="flex flex-col items-start gap-1 sm:flex-row sm:justify-between sm:gap-2">
+                <span className="w-full min-w-0 truncate text-sm font-bold sm:w-auto sm:flex-1">{headline}</span>
                 {statusBadges}
               </span>
               {/* Same when-plus-what pairing as the compact row above, so the two
@@ -577,13 +634,14 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
                 {t(`type.${post.type}`)}
               </span>
               <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-                <span className="min-w-0 truncate">
-                  {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
+                <span className="min-w-0 truncate" title={rawIds}>
+                  {t('approvals.card.campaign', { campaign: campaignBaseLabel(post.campaign) })}
                 </span>
                 {clientChip}
               </span>
             </span>
           </button>
+          {connectLine}
           {/* Caption body + inline preview: SIBLINGS of the open-detail button (not
               nested), so the reviewer sees the real post shape without nesting any
               content inside the interactive card affordance. */}
@@ -633,12 +691,12 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
           {captionBody ? (
             <p className="line-clamp-3 whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{captionBody}</p>
           ) : null}
-          {/* A link-card preview is what a LINK post looks like on a feed lane. A Radar reply is
-              a comment on someone else's thread and carries no link, so the preview rendered an
-              empty "no image" box captioned as a LinkedIn card on a Reddit-only reply - the
-              biggest block of space on the card spent saying nothing is there. */}
-          {isTextPost && !post.radarReplyTo ? <LinkCardPreview image={post.image} title={post.title} link={post.link} /> : null}
-          <div className="mt-auto flex items-center gap-1.5 pt-1.5">
+          {/* The LinkedIn card exists only where LinkedIn builds one: a LinkedIn text post WITH
+              a link (the engine's article branch). Everything else (a Reddit or X text post, a
+              plain LinkedIn post, a Radar reply) publishes without a card, so an empty "no image"
+              box captioned as a LinkedIn card was the biggest block on the card saying nothing. */}
+          {showsLinkedinCard(post) && !post.radarReplyTo ? <LinkCardPreview image={post.image} title={post.title} link={post.link} /> : null}
+          <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-1.5">
             <PlatformIcons platforms={post.platforms} />
             <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} />
             {/* The interactive badges (archived / auto-approved / warmth advisory): each is an
@@ -667,11 +725,13 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
             ) : null}
             <span className="flex-1" />
             {actions || liveLinks}
-            {menu}
+            {/* ml-auto: when the row wraps on a phone, the ⋯ stays at the right edge under
+                the actions instead of dropping to the left on a line of its own. */}
+            {menu ? <span className="ml-auto flex">{menu}</span> : null}
           </div>
           {handOffCapture}
           {readinessBlockers}
-          {error ? <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
+          <ActionError error={error} />
         </div>
       )}
     </li>
@@ -1015,10 +1075,9 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
           ok++;
           done.push(keyOf(p));
         } catch (e) {
-          // Localize the reason so the summary states WHY, not just which post: a client
-          // timeout/network error gets its de-CH string, while a server/engine message
-          // (e.g. the clearer Mastodon one) passes through verbatim via errText.
-          fails.push({ id: p.id, msg: errText(e, t, 'approvals.action.error') });
+          // The summary states WHY in plain words when that is known (a client timeout or an
+          // unreachable pendpost); a server/engine line rides the "?" only, never the bar.
+          fails.push({ id: p.id, ...actionAlert(e, t) });
         }
         setBulkProgress({ done: ok + fails.length, total: sel.length });
       }
@@ -1034,7 +1093,9 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
       return next;
     });
     if (fails.length) {
-      throw new Error(t('approvals.bulk.summary', { ok, label, failed: fails.length, ids: fails.map((f) => (f.msg ? `${f.id} (${f.msg})` : f.id)).join(', ') }));
+      const ids = fails.map((f) => (f.known ? `${f.id} (${f.text})` : f.id)).join(', ');
+      const detail = fails.filter((f) => f.raw).map((f) => `${f.id}: ${f.raw}`).join('\n') || null;
+      throw plainError(t('approvals.bulk.summary', { ok, label, failed: fails.length, ids }), detail);
     }
   };
 
@@ -1172,9 +1233,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
             </span>
           ) : null}
           <span className="flex-1" />
-          {bulkError ? (
-            <p role="alert" className="basis-full text-[11px] text-red-600 dark:text-red-300">{bulkError}</p>
-          ) : null}
+          <ActionError error={bulkError} className="basis-full" />
           <button
             type="button"
             onClick={clearSelection}
@@ -1183,11 +1242,10 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
             {t('approvals.selectAll.clear')}
           </button>
           <ActionButton
-            variant="danger"
+            variant="subtle"
             icon={XCircle}
             labels={{ idle: t('approvals.action.reject'), loading: t('approvals.action.rejecting'), success: t('approvals.action.rejected'), error: t('approvals.action.error') }}
-            onError={setBulkError}
-            onAction={async () => {
+            onAction={guardAction(async () => {
               const note = await prompt({
                 title: t('approvals.bulkRejectPrompt.title'),
                 body: t('approvals.rejectPrompt.body'),
@@ -1196,25 +1254,24 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
               });
               if (note === null) throw { canceled: true };
               await runBulk((p) => (p.clientId ? rejectPost(p.campaign, p.id, note || undefined, p.clientId) : rejectPost(p.campaign, p.id, note || undefined)), t('approvals.bulk.labelRejected'));
-            }}
+            }, setBulkError, t)}
           />
           <ActionButton
             variant="success"
             icon={CheckCircle2}
             labels={{ idle: t('approvals.action.approve'), loading: bulkProgress && bulkProgress.total > 1 ? t('approvals.action.approvingN', bulkProgress) : t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
-            onError={setBulkError}
-            onAction={async () => {
+            onAction={guardAction(async () => {
               // Approve only the publishable posts; a post whose lane is offline cannot be
               // published, so it is skipped - the standing manualNeeded line in the bar
               // states the skip before AND after (skipped posts stay selected), so no
               // separate post-hoc error is stacked on top of it.
               const connected = effectiveSelection.filter((p) => !isOffline(p));
               if (!connected.length) {
-                setBulkError(t('approvals.bulk.offlineOnly', { n: effectiveSelection.length }));
+                setBulkError({ text: t('approvals.bulk.offlineOnly', { n: effectiveSelection.length }), raw: null });
                 throw { canceled: true };
               }
               await runBulk((p) => (p.clientId ? approvePost(p.campaign, p.id, undefined, p.clientId) : approvePost(p.campaign, p.id)), t('approvals.bulk.labelApproved'), connected);
-            }}
+            }, setBulkError, t)}
           />
         </div>
       ) : null}
@@ -1222,20 +1279,22 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
       {isLoading && !items.length ? (
         // Skeleton placeholders while the first plan fetch is in flight, so the
         // empty-state copy never flashes before any data has arrived (A16).
-        <div className="grid min-h-0 flex-1 content-start gap-2.5 overflow-y-auto scrollbar-soft p-1 pr-2 xl:grid-cols-2 2xl:grid-cols-3">
+        <div className="grid grid-cols-1 content-start gap-2.5 p-1 xl:grid-cols-2 2xl:grid-cols-3">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} className="h-24 w-full" />
           ))}
         </div>
       ) : items.length ? (
-        // p-1 pr-2 gives the focus ring (ring-2) room so it is never clipped by
-        // this scroll container; scrollbar-soft keeps the right gutter slim.
+        // No scroll box of its own: the list grows and the app's one scroller (<main>)
+        // moves it, so the sticky bulk bar above pins to the top of the page. p-1 keeps
+        // the focus ring (ring-2) room at the edges. items-start: each card keeps its own
+        // height, so a short card beside a tall one is never stretched into an empty band.
         <ul
           role="list"
           className={
             density === 'compact'
-              ? 'flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto scrollbar-soft p-1 pr-2'
-              : 'grid min-h-0 flex-1 content-start gap-2.5 overflow-y-auto scrollbar-soft p-1 pr-2 xl:grid-cols-2 2xl:grid-cols-3'
+              ? 'flex flex-col gap-1.5 p-1'
+              : 'grid grid-cols-1 content-start items-start gap-2.5 p-1 xl:grid-cols-2 2xl:grid-cols-3'
           }
         >
           {items.map((post) => (

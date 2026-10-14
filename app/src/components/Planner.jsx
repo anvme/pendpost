@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronUp, ChevronDown, Plus, CornerUpLeft } from 'lucide-react';
-import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, gridDisplayAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread } from '../lib/format.js';
+import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, campaignBaseLabel, TIME_CHIP_META, timeChipTone, gridDisplayAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread, postStatusWord, ATTENTION_WORDS, ROW_STATUS_META, failedDisplayKey, liveFailure, blockedLanes as blockedLanesOf } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { usePostActions } from '../lib/usePostActions.js';
 import { useT } from '../lib/i18n.js';
-import { PlatformIcons, PostStatusPill, CoverThumb, Skeleton } from './ui.jsx';
+import { humanizeFailure } from '../lib/failureCopy.js';
+import { PlatformIcons, PostStatusPill, CoverThumb, Skeleton, useCachedSetup, PLATFORM_META } from './ui.jsx';
 import { HdBadge } from './ui/HdBadge.jsx';
 import { RowMenu } from './ui/RowMenu.jsx';
 import { Tip } from './ui/Tooltip.jsx';
@@ -30,14 +31,14 @@ const EMPTY_TIME = '--:--';
 //    pointer-only hover tooltip.
 // The Tip reveals the same accessible name on pointer hover; the aria-label
 // carries it for screen readers regardless of hover or focus.
-export function TimeChip({ post, lane, variant = 'overlay' }) {
+export function TimeChip({ post, lane, variant = 'overlay', tip = true }) {
   const t = useT();
   if (!post.scheduledAt) return null;
   const tone = timeChipTone(post, lane);
   const meta = TIME_CHIP_META[tone];
   const { Icon } = meta;
   const time = fmtTime(post.scheduledAt);
-  const accessibleName = `${t(`timeChip.${tone}`)} - ${time}`;
+  const accessibleName = `${t(`timeChip.${tone}`)}, ${time}`;
 
   if (variant === 'standalone') {
     return (
@@ -59,14 +60,32 @@ export function TimeChip({ post, lane, variant = 'overlay' }) {
   const className = variant === 'inline'
     ? `inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 ${meta.cls}`
     : `absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 backdrop-blur ${meta.cls}`;
-  return (
-    <Tip label={accessibleName}>
-      <span role="img" aria-label={accessibleName} className={className}>
-        <Icon size={11} aria-hidden="true" />
-        {time}
-      </span>
-    </Tip>
+  const chip = (
+    <span role="img" aria-label={accessibleName} className={className}>
+      <Icon size={11} aria-hidden="true" />
+      {time}
+    </span>
   );
+  // `tip={false}`: the chip sits inside a trigger that already carries the post's one
+  // status-word tooltip (CompactPostCard), so a second bubble would stack on it.
+  return tip ? <Tip label={accessibleName}>{chip}</Tip> : chip;
+}
+
+// The plain "why" for a Blockiert post, shared by the Week card and the List row: the
+// lanes that make the pill read Blockiert (format.js blockedLanes, unconnected and not a
+// manual paste lane), named in one neutral sentence.
+function blockedReason(lanes, t) {
+  return t(lanes.length > 1 ? 'freigaben.blocked.reasonMany' : 'freigaben.blocked.reason', {
+    platforms: lanes.map((p) => PLATFORM_META[p]?.label || p).join(', '),
+  });
+}
+
+// The plain "why" for a live failure, shared by the Week card and the List row so both
+// read ONE predicate: any live failure, with or without a message. humanizeFailure names
+// a code-only failure from its code (failureCopy.js CODE_KEYS) and falls back to the
+// generic sentence, never the raw platform line.
+function failureReason(post, t) {
+  return liveFailure(post) ? humanizeFailure(post.lastFailure, t).text : null;
 }
 
 // Week cards are draggable onto another day column = reschedule, keeping the
@@ -87,6 +106,13 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
   const flag = needsAttention(post) && !dim; // active attention -> show the accent
   const showBar = flag && accent === 'bar' && meta.bar;
   const showStrip = flag && accent === 'strip' && meta.strip;
+  // A "Blockiert" card says WHY in the caption slot, the way a "Wartet auf dich" card
+  // shows its failure reason: the lanes that make the pill read Blockiert (postStatusWord's
+  // own predicate: unconnected and not a manual paste lane).
+  const setup = useCachedSetup();
+  const blockedLanes = postStatusWord(post, setup) === 'blocked' ? blockedLanesOf(post, setup) : [];
+  // Why a live failure did not go out, as the one plain sentence (never the raw line).
+  const failureLine = failureReason(post, t);
   return (
     // Wrapper (relative, NO overflow-hidden) so the ⋯ menu can escape the card's rounded
     // clip; the card button keeps overflow-hidden for the cover. The ⋯ is a SIBLING of the
@@ -101,12 +127,12 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
       // stuttering pile of fragments to a SR; carry ONE clean accessible name
       // (post + type + time, like the Month/List views - the column header already
       // reads the day) so the control announces itself once.
-      aria-label={`${postDisplayTitle(post, t('planner.list.untitled'))} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}`}
+      aria-label={`${postDisplayTitle(post, t('planner.list.untitled'))}, ${t(`type.${post.type}`)}, ${fmtTime(post.scheduledAt)}`}
       className={`relative w-full overflow-hidden rounded-xl text-left bg-white/80 dark:bg-zinc-900/70 ring-1 ring-zinc-900/[0.06] dark:ring-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.05)] transition hover:-translate-y-1 motion-reduce:hover:translate-y-0 hover:shadow-xl hover:bg-white/90 dark:hover:bg-zinc-800/80 focus-visible:ring-2 focus-visible:ring-brand ${dim ? 'opacity-60 hover:opacity-100' : ''}`}
     >
       {showBar ? <span aria-hidden="true" className={`pointer-events-none absolute left-0 top-0 bottom-0 z-10 w-1 ${meta.bar}`} /> : null}
       <div className="relative">
-        <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className={`${gridDisplayAspect(post)} w-full`} />
+        <CoverThumb media={post.media} image={post.image} textPreview={post.caption} overlayInset className={`${gridDisplayAspect(post)} w-full`} />
         <TimeChip post={post} lane={lane} variant="overlay" />
       </div>
       <div className="space-y-1.5 p-2">
@@ -129,13 +155,22 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
             </span>
           ) : null}
         </div>
-        {post.lastFailure?.message ? (
+        {blockedLanes.length ? (
+          // Neutral ink: a blocked post waits on setup, nothing is failing.
+          <p className="line-clamp-2 text-[11px] font-medium leading-snug text-zinc-600 dark:text-zinc-300">
+            {blockedReason(blockedLanes, t)}
+          </p>
+        ) : failureLine ? (
           // A failed/skipped post shows WHY right on the card. The reason was previously
           // only a hover title on the pill and a banner in the drawer - invisible on the
           // overview and on touch. It reuses the caption-snippet slot (no extra height):
           // for a post that did not go out, knowing why matters more than the caption.
-          <p className="line-clamp-2 text-[11px] font-medium leading-snug text-red-700 dark:text-red-300">
-            {post.lastFailure.message}
+          // D1: red only when the owner must act; a failure pendpost is still retrying
+          // (failedDisplayKey, the one judge) reads in neutral ink. The card is a button,
+          // so it holds no "?": the raw platform line lives behind the post detail's "?",
+          // and the hover title repeats the sentence (line-clamp may cut it), never the raw.
+          <p className={`line-clamp-2 text-[11px] font-medium leading-snug ${failedDisplayKey(post.lastFailure) === 'publish-retrying' ? 'text-zinc-600 dark:text-zinc-300' : 'text-red-700 dark:text-red-300'}`} title={failureLine}>
+            {failureLine}
           </p>
         ) : (
           <p className="line-clamp-2 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300">
@@ -201,35 +236,51 @@ function useDayDropTarget(onMoveToDay) {
 // a truncated title; Month stays title-less to fit the narrow cell.
 export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, showTitle = false }) {
   const t = useT();
+  // The chip wears the SAME word as the Week/List/detail pill (postStatusWord over the
+  // cached setup): the pill's own glyph in the pill's tone, and the word in the name.
+  const setup = useCachedSetup();
+  const word = postStatusWord(post, setup);
+  const status = ROW_STATUS_META[word] || STATUS_PILL_META.scheduled;
+  const StatusGlyph = status.Icon;
   const title = postDisplayTitle(post, t('planner.list.untitled'));
-  // ONE clean accessible name (day? + post + type + time), matching the Week/List
-  // cards; the inner dot/chip/type/platforms stay aria-hidden so a SR hears the
+  // ONE clean accessible name (day? + post + status + type + time), matching the Week/List
+  // cards; the inner glyph/chip/type/platforms stay aria-hidden so a SR hears the
   // name once instead of a stuttering fragment pile.
-  const name = `${dayLabel ? `${dayLabel} - ` : ''}${title} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}${post.clientName ? ` - ${post.clientName}` : ''}`;
+  const name = `${dayLabel ? `${dayLabel}, ` : ''}${title}, ${t(`status.${word}`)}, ${t(`type.${post.type}`)}, ${fmtTime(post.scheduledAt)}${post.clientName ? `, ${post.clientName}` : ''}`;
+  // D4: the chip shows only a glyph, so its status word appears on hover and keyboard
+  // focus through the shared Tip. Not PinTip: that one preventDefaults the click to pin
+  // its bubble, and a click here must open the post. Touch loses nothing: a tap opens the
+  // post, which shows the same word.
   return (
+    <Tip label={t(`status.${word}`)}>
     <button
       type="button"
       onClick={() => onSelect(post)}
       draggable={draggable}
       onDragStart={draggable ? postDragStart(post) : undefined}
       aria-label={name}
-      className="flex w-full items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-left text-[10px] ring-1 ring-zinc-900/10 transition hover:bg-white dark:bg-zinc-800/70 dark:ring-white/10 dark:hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-brand"
+      // Tap target: at least 24px tall on a fine pointer (WCAG 2.5.8 AA; it measured 23px) and
+      // the house 44px on a coarse one (touch). Tailwind 3.4 has no pointer-coarse variant,
+      // hence the arbitrary media variant. The Month cell has only a min-height and shows at
+      // most three chips plus "+n more", so taller chips grow the row, never clip it.
+      className="flex min-h-6 w-full items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-left text-[10px] ring-1 ring-zinc-900/10 transition hover:bg-white dark:bg-zinc-800/70 dark:ring-white/10 dark:hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-brand [@media(pointer:coarse)]:min-h-11"
     >
-      {/* Status dot so attention states read at compact zoom (UX-05); color is never
-          the sole signal - the button's aria-label carries the post identity. */}
-      <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${postDot(post)}`} />
+      {/* The status word's glyph in the pill's tone (never colour alone: the shape is the
+          pill's icon, and the button's name speaks the word). */}
+      <span aria-hidden="true" data-status-glyph={word} className={`inline-flex shrink-0 rounded-full p-0.5 ring-1 ${status.cls}`}>
+        <StatusGlyph size={10} />
+      </span>
       {/* FR1: color-coded time chip (visual only inside the labeled button) */}
       <span aria-hidden="true" className="contents">
-        <TimeChip post={post} lane={lane} variant="inline" />
+        <TimeChip post={post} lane={lane} variant="inline" tip={false} />
       </span>
-      {/* Roomy Week column: the title carries identity, so it takes the free space
-          and the type word is dropped (redundant next to the platform icon). The
-          narrow Month cell has no title, so it keeps the type word instead. */}
+      {/* Roomy Week column: the title carries identity, so it takes the free space. The
+          type word is dropped everywhere (redundant next to the platform icon): in the
+          narrow Month cell it only ever showed as a truncated sliver ("T."). The button's
+          name keeps the type for a screen reader. */}
       {showTitle ? (
         <span aria-hidden="true" className="min-w-0 flex-1 truncate font-bold text-zinc-700 dark:text-zinc-200">{title}</span>
-      ) : (
-        <span aria-hidden="true" className="truncate text-zinc-500 dark:text-zinc-400">{t(`type.${post.type}`)}</span>
-      )}
+      ) : null}
       <span aria-hidden="true" className="contents">
         <PlatformIcons platforms={post.platforms} size={10} />
       </span>
@@ -242,6 +293,7 @@ export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, sho
         </span>
       ) : null}
     </button>
+    </Tip>
   );
 }
 
@@ -450,7 +502,9 @@ export function MonthView({ posts, monthAnchor, onSelect, onMoveToDay, loading, 
                   // first hidden post (index 3) so the control is never inert.
                   onClick={() => (onShowDay ? onShowDay(day) : onSelect(dayPosts[3]))}
                   aria-label={t('planner.month.moreAria', { count: dayPosts.length - 3 })}
-                  className="w-full rounded-md px-1 py-0.5 text-left text-[10px] text-zinc-500 dark:text-zinc-400 transition hover:bg-white/70 hover:text-zinc-600 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  // Tap target: the Month chips' own decision, at least 24px on a fine pointer
+                  // (WCAG 2.5.8 AA; it measured about 16px) and 44px on a coarse one (touch).
+                  className="min-h-6 w-full rounded-md px-1 py-0.5 text-left text-[10px] text-zinc-500 dark:text-zinc-400 transition hover:bg-white/70 hover:text-zinc-600 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand [@media(pointer:coarse)]:min-h-11"
                 >
                   {t('planner.month.more', { count: dayPosts.length - 3 })}
                 </button>
@@ -478,8 +532,21 @@ function ListRow({ post, posts = [], onSelect, onEdit }) {
   // a parent shows how many replies thread beneath it. Same-campaign only.
   const { parent: threadParent, replies: threadReplies } = deriveThread(post, posts);
   const isReply = Boolean(post.xReplyTo && threadParent);
+  // An attention word shows at every width. On a phone it shares the line with the time,
+  // the title and the ⋯ and squeezed the title to a few characters, so below md it drops
+  // to its own line under the title (order-last + basis-full, indented past the time).
+  // A settled word stays hidden on the phone (quietOnPhone), so its slot is layout-neutral.
+  const setup = useCachedSetup();
+  const word = postStatusWord(post, setup);
+  const pillOwnLineOnPhone = ATTENTION_WORDS.has(word);
+  // A Blockiert row says why in its meta line, as the Week card does in its caption slot;
+  // the pill carries only the word.
+  const blockedLanes = word === 'blocked' ? blockedLanesOf(post, setup) : [];
+  // The pill carries no reason in a title, so a failed row says WHY on its meta line, the
+  // same plain sentence as the Week card (never the raw platform line).
+  const failureLine = failureReason(post, t);
   return (
-    <li className={`group flex items-center gap-3 rounded-xl p-2 ring-1 ring-transparent transition hover:bg-white/70 dark:hover:bg-zinc-800/50 ${isReply ? 'ml-5 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700' : ''}`}>
+    <li className={`group flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl p-2 ring-1 ring-transparent transition hover:bg-white/70 dark:hover:bg-zinc-800/50 ${isReply ? 'ml-5 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700' : ''}`}>
       {published ? (
         <span className="w-11 shrink-0 text-center font-display text-sm font-bold">
           {post.scheduledAt ? fmtTime(post.scheduledAt) : EMPTY_TIME}
@@ -520,7 +587,18 @@ function ListRow({ post, posts = [], onSelect, onEdit }) {
             {postDisplayTitle(post, t('planner.list.untitled'))}
           </p>
           <p className="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
-            <span className="min-w-0 truncate">{campaignBaseLabel(post.campaign)} · {post.id} · {t(`type.${post.type}`)}</span>
+            {/* The title above names the post; the raw slug ("li-scope") is infrastructure,
+                so it lives only on the hover title with the raw campaign id. */}
+            {blockedLanes.length ? (
+              // Neutral ink: a blocked post waits on setup, nothing is failing.
+              <span className="min-w-0 truncate text-zinc-600 dark:text-zinc-300" title={`${post.campaign} / ${post.id}`}>{blockedReason(blockedLanes, t)}</span>
+            ) : failureLine ? (
+              // D1: neutral ink while pendpost retries on its own, red only when the owner
+              // must act. The title repeats the sentence, which truncate may cut.
+              <span className={`min-w-0 truncate ${failedDisplayKey(post.lastFailure) === 'publish-retrying' ? 'text-zinc-600 dark:text-zinc-300' : 'text-red-700 dark:text-red-300'}`} title={failureLine}>{failureLine}</span>
+            ) : (
+              <span className="min-w-0 truncate" title={`${post.campaign} / ${post.id}`}>{campaignBaseLabel(post.campaign)} · {t(`type.${post.type}`)}</span>
+            )}
             {/* Issue 6: the same client chip Freigaben's cards carry, shown only
                 when all-clients mode stamped one. */}
             {post.clientName ? (
@@ -557,11 +635,11 @@ function ListRow({ post, posts = [], onSelect, onEdit }) {
       {/* ZONE 3 (status + actions), siblings of the open-detail button so no interactive
           control nests inside another. The ONE status slot leads (green "Freigegeben" when
           approved and on track, an attention tone otherwise); the ⋯ menu carries every
-          action. The pill stays desktop-only for settled posts to keep a phone row calm,
-          but an attention state shows at every width (needsAttention, same predicate the
-          card accent uses). */}
-      <span className={`items-center ${needsAttention(post) ? 'flex' : 'hidden md:flex'}`}>
-        <PostStatusPill post={post} />
+          action. The pill stays desktop-only for a settled word to keep a phone row calm,
+          but a word that asks the owner for something (ATTENTION_WORDS, e.g. "Blockiert")
+          shows at every width. */}
+      <span className={pillOwnLineOnPhone ? 'order-last flex basis-full pl-14 md:order-none md:basis-auto md:pl-0' : 'contents'}>
+        <PostStatusPill post={post} quietOnPhone />
       </span>
       <RowMenu items={items} label={t('postDetail.more')} />
     </li>
@@ -637,8 +715,11 @@ export function ListView({ posts, onSelect, onEdit, loading, showAllDays = false
     </section>
   );
 
+  // w-full: inside the shell's flex-column panel, mx-auto turns off the cross-axis
+  // stretch and the box would size to its min-content, i.e. the longest nowrap title,
+  // so at 375px the whole list scrolled sideways and pushed the status word off-screen.
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="mx-auto w-full min-w-0 max-w-4xl space-y-5">
       {canToggle ? (
         <button
           type="button"
