@@ -55,10 +55,10 @@ describe('i18n seam', () => {
 
     it('interpolates named {placeholders}', () => {
       const t = makeT('en');
-      expect(t('keys.title', { name: 'Acme Retail' })).toBe('Keys - Acme Retail');
+      expect(t('keys.title', { name: 'Acme Retail' })).toBe('Keys: Acme Retail');
       // The de-CH pack keeps the placeholder; interpolation runs after lookup.
       const tDe = makeT('de-CH');
-      expect(tDe('keys.title', { name: 'Acme Retail' })).toBe('Schlüssel - Acme Retail');
+      expect(tDe('keys.title', { name: 'Acme Retail' })).toBe('Schlüssel: Acme Retail');
     });
 
     it('interpolates a count placeholder coerced to string', () => {
@@ -68,7 +68,7 @@ describe('i18n seam', () => {
 
     it('leaves an unmatched placeholder verbatim rather than blanking it', () => {
       const t = makeT('en');
-      expect(t('keys.title', {})).toBe('Keys - {name}');
+      expect(t('keys.title', {})).toBe('Keys: {name}');
     });
 
     it('returns the raw key id for a key absent from every pack', () => {
@@ -100,7 +100,7 @@ describe('i18n seam', () => {
 
     it('interpolates through the hook', () => {
       const deHook = renderHook(() => useT(), { wrapper: wrapperFor('de-CH') });
-      expect(deHook.result.current('keys.title', { name: 'Beta' })).toBe('Schlüssel - Beta');
+      expect(deHook.result.current('keys.title', { name: 'Beta' })).toBe('Schlüssel: Beta');
     });
   });
 

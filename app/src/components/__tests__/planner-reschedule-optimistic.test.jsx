@@ -1,4 +1,4 @@
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfirmProvider } from '../ui/confirm.jsx';
@@ -74,5 +74,33 @@ describe('useReschedule optimistic update', () => {
     const cached = client.getQueryData(['plans']);
     expect(findPost(cached, 'p1').scheduledAt).toBe('2026-06-25T09:00:00.000Z');
     expect(findPost(cached, 'p2').scheduledAt).toBe('2026-06-17T09:00:00.000Z');
+  });
+});
+
+// Wave 2g F7 (found by the no-raw-error-inline guard): the reschedule dialogs used the
+// server's English line as their body. Both now say the Studio's own sentence; a timeout or
+// an offline pendpost still gets its known sentence.
+describe('useReschedule dialogs never show the raw server line', () => {
+  it('a failed move says the plain sentence, not "HTTP 500 internal"', async () => {
+    deferred.promise = Promise.reject(new Error('HTTP 500 internal'));
+    const { reschedule } = setup();
+    act(() => { reschedule({ campaign: 'acme', id: 'p1' }, '2026-06-25T09:00:00.000Z'); });
+    expect(await screen.findByText('The post could not be rescheduled.')).toBeInTheDocument();
+    expect(screen.queryByText(/HTTP 500/)).toBeNull();
+  });
+
+  it('a failed move with pendpost offline says so', async () => {
+    deferred.promise = Promise.reject(new TypeError('Load failed'));
+    const { reschedule } = setup();
+    act(() => { reschedule({ campaign: 'acme', id: 'p1' }, '2026-06-25T09:00:00.000Z'); });
+    expect(await screen.findByText('Could not reach your local pendpost. Is it running?')).toBeInTheDocument();
+  });
+
+  it('the native-handoff confirm says the Studio sentence, not the server line', async () => {
+    deferred.promise = Promise.reject(Object.assign(new Error('needs_confirm: pass confirm:true to recreate the native object'), { code: 'needs_confirm' }));
+    const { reschedule } = setup();
+    act(() => { reschedule({ campaign: 'acme', id: 'p1' }, '2026-06-25T09:00:00.000Z'); });
+    expect(await screen.findByText(/Rescheduling deletes the scheduled object/)).toBeInTheDocument();
+    expect(screen.queryByText(/pass confirm:true/)).toBeNull();
   });
 });

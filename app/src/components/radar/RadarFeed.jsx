@@ -4,10 +4,11 @@ import {
   ExternalLink, Reply, CircleSlash, Pencil, Radio, Globe, Pin, Bot, ChevronDown,
   Search, Check, FileText, Loader2, MessageSquareReply, MoreHorizontal, Copy, Sprout, AtSign, Link2,
   MessageCircleQuestion, Clock, CircleDashed, Undo2, AlertTriangle, Pause, Ban,
-  X, RefreshCw, Trash2,
+  X, RefreshCw, Trash2, ThumbsUp, ThumbsDown,
 } from 'lucide-react';
+import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from '../ui/Popover.jsx';
 import { fmtRelative, fmtTime, mastodonThreadUrl, isAbsoluteHttpUrl, agentNoteIsForeign, agentNoteExcerpt, AGENT_JOB_CAP_MINUTES } from '../../lib/format.js';
-import { radarBacklogTriage, radarMarkCopyPosted, radarDraftComparison, markPosted, engageCancel, engageUndo, engageCommunityRecheck, errText } from '../../lib/api.js';
+import { radarBacklogTriage, radarMarkCopyPosted, radarDraftComparison, markPosted, engageCancel, engageUndo, engageCommunityRecheck, errAlert, errReason } from '../../lib/api.js';
 import { PLATFORM_META, INNER_SURFACE, FIELD, FIELD_MULTILINE, EYEBROW, FilterChip, Segmented } from '../ui.jsx';
 import { MultiSelectDropdown } from '../ui/MultiSelectDropdown.jsx';
 import { PILL_BASE, PILL_TONES, BTN_PRIMARY, BTN_QUIET, BTN_GHOST, PROJECT_CHIP, TAP_TARGET, MENU_ITEM, MENU_ITEM_HEIGHT, MENU_ITEM_TONES } from '../ui/recipes.js';
@@ -19,6 +20,35 @@ import HistoryChip from '../HistoryChip.jsx';
 import { Select } from '../ui/Select.jsx';
 import { useLint, LintPanel } from '../Composer.jsx';
 import { useLocale } from '../../lib/i18n.js';
+import InfoTip from '../ui/InfoTip.jsx';
+
+// A failed Radar action is { text, raw, known } from lib/api.js errAlert (or errReason for a
+// "<verb> ging nicht. {reason}" line): one plain sentence, with the server's or the engine's raw
+// line behind the "?" only, never inline. The page shell (../Radar.jsx) uses the same two.
+// An agent job's reason line. t() returns the KEY itself for a missing string (lib/i18n.js makeT),
+// so `t(key) || job.reason` never fell back and a reason the engine names before the locale does
+// printed "radar.agent.job.reason.<x>". A missing one reads as `fallbackKey`'s plain sentence, or
+// nothing when there is none: never the raw key, never the raw reason code.
+function jobReason(t, reason, fallbackKey, vars) {
+  const key = `radar.agent.job.reason.${reason}`;
+  const text = t(key, vars);
+  if (text !== key) return text;
+  return fallbackKey ? t(fallbackKey, vars) : '';
+}
+// A sentence the feed writes itself (an invalid link, the drafting threshold): no raw line.
+const plainAlert = (text) => ({ text, raw: null });
+// The alert line itself: the sentence, then the shared "?" for the raw line when there is one.
+function ActionError({ error, className = 'text-xs text-red-600 dark:text-red-400' }) {
+  if (!error) return null;
+  return (
+    <div className="flex items-start gap-1">
+      <p role="alert" className={className}>{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
+// LinkCaptureRow renders its `error` as given, so it gets the sentence plus the "?" as a node.
+const linkError = (err) => (err ? <><span>{err.text}</span><InfoTip label={err.raw && err.raw !== err.text ? err.raw : null} /></> : null);
 
 // Radar FEED cluster (split out of the former ~1850-line Radar.jsx monolith, 2026-08-05).
 // The ranked signal feed and its row machinery: the scored SignalRow (with its R12 relationship
@@ -119,7 +149,7 @@ function CopyOpenBtn({ signal, accounts, text, t }) {
     // The link stays optional here, but a PRESENT link must be an absolute http(s)
     // URL - refused client-side with the localized message (the raw English engine
     // string never reaches this German-capable surface). The typed value survives.
-    if (url.trim() && !isAbsoluteHttpUrl(url)) { setErr(t('radar.copyPosted.linkInvalid')); return; }
+    if (url.trim() && !isAbsoluteHttpUrl(url)) { setErr(plainAlert(t('radar.copyPosted.linkInvalid'))); return; }
     setSaving(true);
     setErr(null);
     try {
@@ -127,7 +157,7 @@ function CopyOpenBtn({ signal, accounts, text, t }) {
       queryClient.invalidateQueries({ queryKey: ['radar'] });
       // The invalidation re-renders this row with signal.copyPosted set -> the posted pill.
     } catch (e) {
-      setErr(e?.message || t('radar.copyPosted.failed'));
+      setErr(errAlert(e, t, 'radar.copyPosted.failed'));
       setSaving(false);
     }
   };
@@ -140,7 +170,7 @@ function CopyOpenBtn({ signal, accounts, text, t }) {
       onChange={setUrl}
       onSave={mark}
       saving={saving}
-      error={err}
+      error={linkError(err)}
       placeholder={t('radar.copyPosted.linkPlaceholder')}
       inputLabel={t('radar.copyPosted.linkLabel')}
       label={t('radar.copyPosted.mark')}
@@ -194,7 +224,7 @@ function AttachAnswerLink({ replied, t }) {
   const save = async () => {
     if (!url.trim()) return;
     // Client-side gate: same absolute-http(s) rule the server enforces, localized.
-    if (!isAbsoluteHttpUrl(url)) { setErr(t('radar.copyPosted.linkInvalid')); return; }
+    if (!isAbsoluteHttpUrl(url)) { setErr(plainAlert(t('radar.copyPosted.linkInvalid'))); return; }
     setSaving(true);
     setErr(null);
     try {
@@ -202,7 +232,7 @@ function AttachAnswerLink({ replied, t }) {
       queryClient.invalidateQueries({ queryKey: ['radar'] });
       queryClient.invalidateQueries({ queryKey: ['plans'] });
     } catch (e) {
-      setErr(e?.message || t('radar.copyPosted.failed'));
+      setErr(errAlert(e, t, 'radar.copyPosted.failed'));
       setSaving(false);
     }
   };
@@ -219,7 +249,7 @@ function AttachAnswerLink({ replied, t }) {
       onChange={setUrl}
       onSave={save}
       saving={saving}
-      error={err}
+      error={linkError(err)}
       placeholder={t('radar.copyPosted.linkPlaceholder')}
       inputLabel={t('radar.copyPosted.linkLabel')}
       label={t('radar.copyPosted.mark')}
@@ -257,7 +287,7 @@ function BacklogRow({ b, canDraft, t }) {
   const draft = async () => {
     setBusy(true);
     setErr(null);
-    try { await radarDraftComparison(b.key); setDone(true); } catch (e) { setErr(e?.message || t('radar.geo.backlog.failed')); }
+    try { await radarDraftComparison(b.key); setDone(true); } catch (e) { setErr(errAlert(e, t, 'radar.geo.backlog.failed')); }
     finally { setBusy(false); }
   };
   // G8: the third outcome. A backlog row used to offer draft-it or stare-at-it-forever;
@@ -268,14 +298,14 @@ function BacklogRow({ b, canDraft, t }) {
     try {
       await radarBacklogTriage(b.key, 'dismiss');
       queryClient.invalidateQueries({ queryKey: ['radar'] });
-    } catch (e) { setErr(e?.message || t('radar.geo.backlog.failed')); }
+    } catch (e) { setErr(errAlert(e, t, 'radar.geo.backlog.failed')); }
   };
   return (
     <li>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <p className="text-sm font-semibold">{b.title}</p>
         {done ? (
-          <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300">
+          <span className={`ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${PILL_TONES.ok}`}>
             <Check size={10} aria-hidden="true" />
             {t('radar.geo.backlog.drafted')}
           </span>
@@ -307,7 +337,7 @@ function BacklogRow({ b, canDraft, t }) {
           })}
         </div>
       ) : null}
-      {err ? <p role="alert" className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{err}</p> : null}
+      {err ? <div className="mt-1"><ActionError error={err} className="text-[11px] text-rose-600 dark:text-rose-400" /></div> : null}
     </li>
   );
 }
@@ -454,8 +484,8 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
   // K5: "time limit" alone did not say whose limit - the reason line quotes the cap in minutes
   // (AGENT_JOB_CAP_MINUTES, one constant, mirrored from the runner's AGENT_TIMEOUT_MS).
   const reasonText = ownsLanes
-    ? `${t(`radar.agent.job.reason.lanes.${job.reason}`, { platforms: laneNames.join(', '), minutes: AGENT_JOB_CAP_MINUTES })} ${kept}`
-    : (t(`radar.agent.job.reason.${job.reason}`) || job.reason);
+    ? `${jobReason(t, `lanes.${job.reason}`, 'radar.agent.job.reason.lanes.agent_error', { platforms: laneNames.join(', '), minutes: AGENT_JOB_CAP_MINUTES })} ${kept}`
+    : jobReason(t, job.reason, 'radar.agent.job.reason.failed');
   // K1: the retry names the lanes, never a count ("Retry X, YouTube, LinkedIn, Instagram").
   const retryLabel = ownsLanes
     ? t('radar.agent.job.retry.lanes', { lanes: retryLaneList(laneNames, t) })
@@ -585,7 +615,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
             the child never ingested anything) - that is the same quiet-amber class, never red:
             nothing failed, the operator just needs to know "done, 0" was not a shrug. */}
         {!failed && job.reason && (partial || job.state === 'done') ? (
-          <span role="status" className="text-amber-700 dark:text-amber-400">{ownsLanes ? reasonText : (t(`radar.agent.job.reason.${job.reason}`) || '')}</span>
+          <span role="status" className="text-amber-700 dark:text-amber-400">{ownsLanes ? reasonText : jobReason(t, job.reason, partial ? 'radar.agent.job.reason.partial' : null)}</span>
         ) : null}
         {/* B9: research succeeded but drafting was skipped - no active campaign to file replies
             under. Amber caveat plus the one move that fixes it, through the SAME planner seam as
@@ -813,7 +843,7 @@ export function DimensionFilters({ options, value, onChange, latestRunAvailable,
         <FilterChip active={value.latestRun} onClick={() => onChange({ latestRun: !value.latestRun })} icon={RefreshCw} label={t('radar.dim.latestRun')} />
       ) : (
         <Tip label={latestRunTip}>
-          <span className="inline-flex cursor-help items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold text-zinc-400 ring-1 ring-zinc-900/5 dark:text-zinc-500 dark:ring-white/10">
+          <span className="inline-flex cursor-help items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold text-zinc-500 ring-1 ring-zinc-900/5 dark:text-zinc-400 dark:ring-white/10">
             <RefreshCw size={12} aria-hidden="true" />{t('radar.dim.latestRun')}
           </span>
         </Tip>
@@ -855,17 +885,73 @@ export function ActiveFilterStrip({ value, options, onChange, shown, total, t })
   );
 }
 
+// The query tuner's lines under a search (relevance plan 1e): one per open PROPOSAL (broadening the
+// tuner may not apply on its own: Apply / Dismiss) and one per recent AUTO-APPLIED change
+// (narrowing it did apply: Undo). What a line says is derived from the change's kind, never a raw
+// enum. States: nothing to show renders nothing; a tap shows a spinner on that button and holds
+// the line's other button; a refusal stays inline under the line and the change is not applied.
+const TUNE_KINDS = ['excludeKeywords', 'minScore', 'disable', 'muteAuthor', 'muteDomain', 'keywords', 'sources', 'hashtags', 'subreddits', 'newQuery'];
+function tuneText(item, t) {
+  if (!TUNE_KINDS.includes(item.kind)) return null;
+  const list = (xs) => (Array.isArray(xs) ? xs : []).map((v) => (item.kind === 'sources' ? sourceLabel(t, v) : v)).join(', ');
+  return t(`radar.tune.kind.${item.kind}`, {
+    values: list(item.added || item.add),
+    value: item.after ?? item.value ?? '',
+    label: item.query?.label || '',
+  });
+}
+function TuneLine({ item, mode, onAction, t }) {
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const text = tuneText(item, t);
+  if (!text) return null;
+  const run = async (action) => {
+    setBusy(action);
+    setError(null);
+    try {
+      await onAction(action, item.id);
+    } catch (err) {
+      setError(errReason(err, t, 'radar.tune.error'));
+    } finally { setBusy(null); }
+  };
+  const spin = (action) => (busy === action ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : null);
+  return (
+    <li className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+      <Bot size={12} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+      <span className="text-zinc-500 dark:text-zinc-400">{t(mode === 'proposal' ? 'radar.tune.proposal' : 'radar.tune.tuned')}</span>
+      <span className="min-w-0 break-words">{text}</span>
+      {mode === 'proposal' ? (
+        <>
+          <button type="button" disabled={Boolean(busy)} onClick={() => run('apply')} className={`${BTN_QUIET} ${TAP_TARGET}`}>{spin('apply')}{t('radar.tune.apply')}</button>
+          <button type="button" disabled={Boolean(busy)} onClick={() => run('dismiss')} className={`${BTN_GHOST} ${TAP_TARGET}`}>{spin('dismiss')}{t('radar.tune.dismiss')}</button>
+        </>
+      ) : (
+        <button type="button" disabled={Boolean(busy)} onClick={() => run('undo')} className={`${BTN_GHOST} ${TAP_TARGET}`}>{spin('undo')}{t('radar.done.undo')}</button>
+      )}
+      {error ? <div className="basis-full"><ActionError error={error} /></div> : null}
+    </li>
+  );
+}
+
 // The "By search" lens (owner ask: "a lot of results are low quality - let me see which query
 // found them"). Instead of a flat feed, ONE row per saved search, most-signals-first, so a
 // junk-producing query is obvious by its volume. Each row closes the loop: SHOW its signals in
 // the feed, TUNE it in Settings, or DISMISS all of them at once (watched are never swept). This
 // turns "hide bad rows one by one" into "fix the source of the noise".
-export function QueryQualityList({ groups, onShow, onTune, onDismissAll, clearing, t }) {
+// Relevance plan 1d/1e: the count line also carries the search's precision (the share of what it
+// found that was NOT marked not relevant, from the server's per-search counters), and under it sit
+// the tuner's lines for that search (TuneLine). No new screen: the loop lives where the noise is read.
+export function QueryQualityList({ groups, onShow, onTune, onDismissAll, onTuneAction, clearing, t }) {
   if (!groups.length) return <p className="px-1 py-3 text-xs text-zinc-500 dark:text-zinc-400">{t('radar.byQuery.empty')}</p>;
   return (
     <ol className="space-y-2">
       {groups.map((g) => {
         const clearable = g.signals.filter((s) => s.watched !== true).length;
+        const shown = Number(g.stats?.shown) || 0;
+        const less = Math.min(shown, Number(g.stats?.less) || 0);
+        const precision = shown ? Math.round(((shown - less) / shown) * 100) : null;
+        const proposals = onTuneAction ? (g.proposals || []) : [];
+        const tuned = onTuneAction ? (g.tuned || []) : [];
         return (
           <li key={g.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl p-3 ring-1 ring-zinc-900/5 transition hover:bg-zinc-900/[0.02] dark:ring-white/10 dark:hover:bg-white/[0.03]">
             <div className="min-w-0 flex-1">
@@ -873,7 +959,17 @@ export function QueryQualityList({ groups, onShow, onTune, onDismissAll, clearin
                 <Search size={13} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                 <span className="truncate text-sm font-bold">{g.label}</span>
               </div>
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.byQuery.count', { n: g.signals.length })}</span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                {t('radar.byQuery.count', { n: g.signals.length })}
+                {precision != null ? (
+                  <>
+                    <span aria-hidden="true"> · </span>
+                    <Tip label={t('radar.byQuery.precision.tip', { less, shown })}>
+                      <span tabIndex={0} className="cursor-help rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">{t('radar.byQuery.precision', { p: precision })}</span>
+                    </Tip>
+                  </>
+                ) : null}
+              </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {g.tunable ? <button type="button" onClick={() => onShow(g.id)} className={`${BTN_QUIET} ${TAP_TARGET}`}>{t('radar.byQuery.filter')}</button> : null}
@@ -884,6 +980,12 @@ export function QueryQualityList({ groups, onShow, onTune, onDismissAll, clearin
                 </button>
               ) : null}
             </div>
+            {proposals.length || tuned.length ? (
+              <ul className="basis-full space-y-1" aria-label={t('radar.tune.label', { label: g.label })}>
+                {proposals.map((p) => <TuneLine key={p.id} item={p} mode="proposal" onAction={onTuneAction} t={t} />)}
+                {tuned.map((e) => <TuneLine key={e.id} item={e} mode="tuned" onAction={onTuneAction} t={t} />)}
+              </ul>
+            ) : null}
           </li>
         );
       })}
@@ -1048,8 +1150,9 @@ function EngageStatus({ signal, t, onRecheckRules, recheckBusy }) {
 // per row, secondary collapses into the overflow). Closes on outside-click or Escape.
 // The trigger paints a 16px glyph and hits like a 44x44 button (recipes.js TAP_TARGET): the
 // canon's tap-target floor is met by the hit box, not by the row, so nothing here got taller.
-// The SIGNAL row surfaces "Erledigt" (mark processed) as a first-class quiet action instead, so it
-// passes `showDismiss={false}` and this menu carries Watch alone. A GEO backlog row reuses it with
+// The SIGNAL row surfaces both of its dismiss verbs as first-class row actions ("Erledigt" and the
+// "Nicht relevant" glyph), so its overflow carries no dismiss at all (showDismiss false): Watch, plus
+// "Mehr davon" riding `extraItems`. A GEO backlog row reuses it with
 // `onWatch` OMITTED - a backlog entry has no thread to pin - so its overflow carries Dismiss alone.
 // `extraItems` (spec 50 rows 5 + 11): Cancel for a row that has not gone out yet, Undo for
 // one that has. Both are secondary by definition, so the overflow is where they live - the
@@ -1119,6 +1222,61 @@ function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, extraItems =
   );
 }
 
+// Which saved search surfaced a signal. A saved query opens a small popover (the existing ui
+// Popover) with its label, keywords and the two things the owner does about a junk-producing
+// search: edit it (deep link to its editor in Settings) or delete it. An orphan (the search was
+// deleted) or a foreign project's signal in the all-projects view stays the quiet static chip.
+function QueryChip({ id, label, query, onEdit, onDelete, t }) {
+  const chip = (
+    <>
+      <Search size={11} aria-hidden="true" />
+      <span className="truncate">{label}</span>
+    </>
+  );
+  if (!query || !onEdit || !onDelete) {
+    return (
+      <Tip label={t('radar.signal.query.tip', { query: label })}>
+        <span className="inline-flex max-w-[10rem] cursor-help items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">{chip}</span>
+      </Tip>
+    );
+  }
+  const keywords = Array.isArray(query.keywords) ? query.keywords.filter(Boolean) : [];
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        {/* The interactive chip reads as a control, not as meta text: the BTN_QUIET hairline
+            ring + hover wash (the house "this does something" affordance), at meta density so
+            the row does not grow. TAP_TARGET carries the 44px hit area invisibly. */}
+        <button type="button" aria-label={t('radar.signal.query.tip', { query: label })} className={`inline-flex max-w-[10rem] items-center gap-1 rounded-lg px-1.5 py-0.5 text-xs text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5 dark:hover:text-zinc-100 ${TAP_TARGET}`}>
+          {chip}
+        </button>
+      </PopoverTrigger>
+      {/* Clicks inside the portal still bubble through React to the row, whose click toggles the
+          card; stop them here so reading the popover never expands the card underneath. */}
+      <PopoverContent align="start" className="w-64 space-y-2 p-3" aria-label={t('radar.signal.query.tip', { query: label })} onClick={(e) => e.stopPropagation()}>
+        <p className="text-sm font-semibold">{query.label || id}</p>
+        {keywords.length ? (
+          <p className="text-xs text-zinc-600 dark:text-zinc-300">{keywords.join(', ')}</p>
+        ) : (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.signal.query.noKeywords')}</p>
+        )}
+        <div className="flex items-center gap-2 pt-1">
+          <PopoverClose asChild>
+            <button type="button" onClick={() => onEdit(id)} className={`${BTN_QUIET} ${TAP_TARGET}`}>
+              <Pencil size={13} aria-hidden="true" />{t('radar.signal.query.edit')}
+            </button>
+          </PopoverClose>
+          <PopoverClose asChild>
+            <button type="button" onClick={() => onDelete(id)} className={`${BTN_QUIET} ${TAP_TARGET}`}>
+              <Trash2 size={13} aria-hidden="true" />{t('radar.signal.query.delete')}
+            </button>
+          </PopoverClose>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 // One scored signal, rebuilt (redesign 2026-07-16) into THREE legible zones over an action bar
 // with exactly ONE primary. The old card stacked ~10 header chips + two lookalike paragraphs
 // (the agent's reasoning and the original post, near-identical grey) over three flat text
@@ -1134,7 +1292,7 @@ function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, extraItems =
 // The intent-tag vocabulary the fact row can humanize (lib/radar.mjs spec 32 §4); an
 // unknown tag renders nothing rather than a raw enum (canon: humanize machine labels).
 const SIGNAL_TAGS = ['buying-question', 'alternative-seeking', 'competitor-mention', 'pain-described'];
-function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, replyIncapable, copyCapable, isKarma = false, isPostIdea = false, isMention = false, campaigns, radarReplies, draftMinScore = 30, queryLabel, onQueueReply, onApproveDraft, onDismiss, onWatch, onNavigate, onNewPost, onOpenPost, onDraftNow, draftingNow = false, draftFailed = false, agentBusy = false, agentReady = false, t }) {
+function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, replyIncapable, copyCapable, isKarma = false, isPostIdea = false, isMention = false, campaigns, radarReplies, draftMinScore = 30, queryLabel, queryOf, onDeleteQuery, onQueueReply, onApproveDraft, onDismiss, onLess, onMore, onWatch, onNavigate, onNewPost, onOpenPost, onDraftNow, draftingNow = false, draftFailed = false, agentBusy = false, agentReady = false, t }) {
   const src = SOURCE_META[signal.source] || { Icon: Radio, color: '' };
   const SrcIcon = src.Icon;
   const [replyOpen, setReplyOpen] = useState(false);
@@ -1202,11 +1360,11 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
       // Map the KNOWN refusal by its stable code, never by matching English prose
       // (F3): below_threshold is the drafting gate - both numbers are already on
       // the client (the signal's own agent score + the owner's drafting.minScore),
-      // so the localized template states them. Everything else keeps the server
-      // message as the fallback detail.
+      // so the localized template states them. Everything else is the plain reply
+      // sentence, the server message behind the "?".
       setReplyError(err?.code === 'below_threshold'
-        ? t('radar.reply.belowThreshold', { score: signal.intentScore, min: draftMinScore })
-        : (err?.message || t('radar.reply.error')));
+        ? plainAlert(t('radar.reply.belowThreshold', { score: signal.intentScore, min: draftMinScore }))
+        : errAlert(err, t, 'radar.reply.error'));
     } finally {
       setQueuing(false);
     }
@@ -1214,7 +1372,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   const approveDraft = async () => {
     if (!draft) return;
     setApproving(true);
-    try { await onApproveDraft(draft, signal); } catch (err) { setReplyError(errText(err, t, 'radar.reply.error')); }
+    try { await onApproveDraft(draft, signal); } catch (err) { setReplyError(errAlert(err, t, 'radar.reply.error')); }
     finally { setApproving(false); }
   };
   // Issue 7 step 2/4: the willAutoPost badge and the failed-draft retry link both funnel through
@@ -1223,7 +1381,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   const runDraftNow = async () => {
     if (!onDraftNow) return;
     setReplyError(null);
-    try { await onDraftNow(signal); } catch (err) { setReplyError(errText(err, t, 'radar.error.save')); }
+    try { await onDraftNow(signal); } catch (err) { setReplyError(errAlert(err, t, 'radar.error.save')); }
   };
 
   // Exactly one PRIMARY, resolved by state (canon #4): a pending draft -> Approve & post; nothing
@@ -1294,7 +1452,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
       queryClient.invalidateQueries({ queryKey: ['radar'] });
       queryClient.invalidateQueries({ queryKey: ['engage'] });
     } catch (err) {
-      setEngageError(t(fallbackKey, { reason: errText(err, t, 'radar.error.save') }));
+      setEngageError(errReason(err, t, fallbackKey));
     } finally { setEngageBusy(false); }
   };
   const canCancel = Boolean(engageRow?.actionId) && (engageRow.status === 'queued' || engageRow.status === 'posting_soon');
@@ -1305,6 +1463,8 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   const engageMenuItems = [
     ...(canCancel ? [{ key: 'engage-cancel', label: t('radar.engage.cancel'), Icon: Ban, onClick: () => runEngage(() => engageCancel(engageRow.actionId), 'radar.engage.cancel.error') }] : []),
     ...(canUndo ? [{ key: 'engage-undo', label: t('radar.undo.action'), Icon: Undo2, onClick: () => setUndoOpen(true) }] : []),
+    // Steering: "Mehr davon" teaches the next scan to find threads like this one; the row stays.
+    ...(onMore ? [{ key: 'feedback-more', label: t('radar.signal.feedback.more'), Icon: ThumbsUp, onClick: () => onMore(signal) }] : []),
   ];
 
   return (
@@ -1385,24 +1545,22 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
         {/* The post's own age. An undated find (the agent could not determine a date - common
             for quora/web) is KEPT by the lookback fence and says so, rather than rendering an
             empty slot the reader mistakes for "fresh". */}
+        {/* D13 (phase 3): ONE clock per row. The second "found {time}" stamp is cut; when
+            Radar surfaced a signal stays answerable through the "Found when" filter. */}
         <span className="text-xs text-zinc-500 dark:text-zinc-400">{signal.ts ? fmtRelative(signal.ts) : t('radar.signal.ageUnknown')}</span>
-        {/* Two clocks, both shown (owner round 3, point 5): the post's own age above judges
-            the thread, this one says when Radar surfaced it - the fresher of the two is the
-            one that answers "why am I seeing this now". */}
-        {signal.foundAt && signal.foundAt !== signal.ts ? (
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.signal.foundAt', { time: fmtRelative(signal.foundAt) })}</span>
-        ) : null}
         {/* Which saved search surfaced this (owner ask: "so much low-quality, let me see which
             query found it"). A quiet muted chip on the collapsed row, glyph + the search's LABEL
             (never the raw matchedQuery id); the hover spells it out. This is the per-row twin of
             the "By search" view - the operator can spot a junk-producing query at a glance. */}
         {signal.matchedQuery ? (
-          <Tip label={t('radar.signal.query.tip', { query: queryLabel ? queryLabel(signal.matchedQuery) : signal.matchedQuery })}>
-            <span className="inline-flex max-w-[10rem] cursor-help items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
-              <Search size={11} aria-hidden="true" />
-              <span className="truncate">{queryLabel ? queryLabel(signal.matchedQuery) : signal.matchedQuery}</span>
-            </span>
-          </Tip>
+          <QueryChip
+            id={signal.matchedQuery}
+            label={queryLabel ? queryLabel(signal.matchedQuery) : signal.matchedQuery}
+            query={queryOf ? queryOf(signal.matchedQuery) : null}
+            onEdit={onNavigate ? (id) => onNavigate('settings', `radar:${id}`) : null}
+            onDelete={onDeleteQuery || null}
+            t={t}
+          />
         ) : null}
         <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
           {/* Spec 50 S5: what "Respond for me" did or will do with this signal, as visible
@@ -1681,8 +1839,11 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           </Tip>
         ) : null}
         {/* Right cluster: mark-processed (first-class, quiet, mirrors the inbox's "Als erledigt
-            markieren") + the overflow (Watch only, since Erledigt lives out here). */}
-        <div className="ml-auto flex items-center gap-2">
+            markieren"), the one-tap "Nicht relevant" glyph, and the overflow (Watch, Mehr davon).
+            gap-3, not gap-2: the glyph and the overflow trigger are both 32px wide, and each
+            TAP_TARGET ::after reaches 6px past its side. At 8px apart the overflow's box covered
+            4px of the glyph's, so the glyph really hit 40px wide. 12px lets both keep 44. */}
+        <div className="ml-auto flex items-center gap-3">
           {/* Owner ask: "Erledigt" is ONE tap - no confirm guard in the way. The row leaves
               instantly; forgiveness comes from the Undo toast the handler fires (onDismiss),
               not a two-step confirm, mirroring the comment inbox's one-click mark-handled. */}
@@ -1691,7 +1852,19 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
               <Check size={13} aria-hidden="true" /> {t('radar.signal.done')}
             </button>
           </Tip>
-          <RowMenu watched={watched} onWatch={() => onWatch(signal)} onDismiss={() => onDismiss(signal)} showDismiss={false} extraItems={engageMenuItems} t={t} />
+          {/* "Nicht relevant" (relevance plan 1d): promoted out of the overflow to one visible tap.
+              It hides the row like Erledigt AND teaches Radar (the example steers the scans, two taps
+              on one author mute them), so the two tooltips spell out the difference (handled vs not
+              relevant). Glyph-only in the neutral tone, never red: it is undoable feedback, not a
+              loss. TAP_TARGET gives the 16px glyph its 44px hit area without growing the row. */}
+          {onLess ? (
+            <Tip label={t('radar.signal.feedback.less.tip')}>
+              <button type="button" aria-label={t('radar.signal.feedback.less')} onClick={() => onLess(signal)} className={`${BTN_GHOST} px-1.5 ${TAP_TARGET}`}>
+                <ThumbsDown size={16} aria-hidden="true" />
+              </button>
+            </Tip>
+          ) : null}
+          <RowMenu watched={watched} onWatch={() => onWatch(signal)} showDismiss={false} extraItems={engageMenuItems} t={t} />
         </div>
       </div>
 
@@ -1720,7 +1893,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           </button>
         </div>
       ) : null}
-      {engageError ? <p role="alert" className="text-xs text-red-600 dark:text-red-400">{engageError}</p> : null}
+      <ActionError error={engageError} />
 
       {/* The inline draft editor - the "Draft reply" (new reply) path only; reused verbatim. An
           existing draft is edited in Freigaben (its full editor), so no duplicate reply is queued. */}
@@ -1769,7 +1942,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           "three truths" bug came from. Unconditional (not gated on replyOpen): approve & post and
           draft now never open the inline editor, so their error needs a home even when it stays
           closed. */}
-      {replyError ? <p role="alert" className="text-xs text-red-600 dark:text-red-400">{replyError}</p> : null}
+      <ActionError error={replyError} />
     </li>
   );
 }

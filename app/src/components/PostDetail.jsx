@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, CalendarPlus, PauseCircle, CheckCheck, Send, ExternalLink, FileImage, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, MessageSquare, ListPlus, ChevronLeft, ChevronRight, Cloud as CloudIcon, Zap, RefreshCw, Pin, PlugZap, ClipboardCopy, Wrench, Crop } from 'lucide-react';
-import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome, gridCropInfo, X_PORTAL_URL } from '../lib/format.js';
+import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, MANUAL_LANES, postStatusWord, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome, gridCropInfo, X_PORTAL_URL, postDisplayTitle, failedDisplayKey, liveFailure } from '../lib/format.js';
 import {
   useAccounts, usePendpostHealth, usePlatformValidate, usePresubmitCheck, useValidateMedia, useActiveClient, useRedditFlairs, useInsights, useConfig, useAssets,
   approvePost, rejectPost, deletePost, unschedulePost, reschedulePost, markPosted, verifyPost,
@@ -10,14 +10,16 @@ import {
 import { VideoPicker } from './Composer.jsx';
 import { MetricChips, makeMetricLabel } from './Insights.jsx';
 import { useCloudDelivery } from '../lib/cloud.js';
-import { StatusPill, ApprovalPill, PlatformIcons, PLATFORM_META, INNER_SURFACE, Modal, CloseButton, PostPreview, PlatformBlockers, setupLinkOffered, EYEBROW, FIELD, FIELD_MULTILINE } from './ui.jsx';
+import { PostStatusPill, PlatformIcons, PLATFORM_META, INNER_SURFACE, Modal, CloseButton, PostPreview, showsLinkedinCard, PlatformBlockers, setupLinkOffered, EYEBROW, FIELD, FIELD_MULTILINE } from './ui.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import ClientBand from './ClientBand.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { ServedBadge } from './ui/ServedBadge.jsx';
 import BrandLintBadge from './ui/BrandLintBadge.jsx';
-import ActionButton from './ui/ActionButton.jsx';
+import ActionButton, { DWELL_MS as ACTION_DWELL_MS } from './ui/ActionButton.jsx';
+import { Button } from './ui/Button.jsx';
+import { TAP_TARGET, STATUS_INK } from './ui/recipes.js';
 import { destinationFor, shortId } from './ui/DestinationStrip.jsx';
 import { ReviewStatusChip } from './ReviewLink.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
@@ -28,6 +30,9 @@ import ZapModal from './ZapModal.jsx';
 import { showToast } from './AppToast.jsx';
 import { patchPlanRemove } from '../lib/useReschedule.js';
 import { useT } from '../lib/i18n.js';
+import { humanizeAction, humanizeFailure, laneLabel, plainError } from '../lib/failureCopy.js';
+import InfoTip from './ui/InfoTip.jsx';
+import { canPublishNowPost, isHeldRetry } from '../lib/postActions.js';
 
 // The comment-capable platforms (spec 02, Pattern P6): the Comments thread panel is
 // offered only when a POSTED post reached at least one of these. Mirrors
@@ -207,13 +212,13 @@ function pollSummary(poll, t) {
 // is live these are the operator's manual to-do list in the Instagram app).
 function stickerSummary(s, t) {
   const label = t(`composer.sticker.${s.kind}.label`);
-  const detail = s.kind === 'poll' ? [s.question, (s.options || []).filter(Boolean).join(' / ')].filter(Boolean).join(' - ')
+  const detail = s.kind === 'poll' ? [s.question, (s.options || []).filter(Boolean).join(' / ')].filter(Boolean).join(' · ')
     : s.kind === 'question' ? s.prompt
     : s.kind === 'link' ? (s.label ? `${s.label} (${s.url || ''})` : s.url)
     : s.kind === 'mention' ? (s.handle ? `@${String(s.handle).replace(/^@/, '')}` : '')
     : s.kind === 'location' ? s.name
     : s.kind === 'hashtag' ? (s.tag ? `#${String(s.tag).replace(/^#/, '')}` : '')
-    : s.kind === 'music' ? [s.title, s.artist].filter(Boolean).join(' - ')
+    : s.kind === 'music' ? [s.title, s.artist].filter(Boolean).join(' · ')
     : '';
   return detail ? `${label}: ${detail}` : label;
 }
@@ -282,7 +287,7 @@ function PostExtras({ post, extras, t }) {
             <dt className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{r.label}</dt>
             <dd className="min-w-0 flex-1 text-xs text-zinc-600 dark:text-zinc-300">
               {r.check ? (
-                <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+                <CheckCircle2 size={13} className={STATUS_INK.ok} aria-hidden="true" />
               ) : r.lines ? (
                 <div className="space-y-0.5">
                   <ul className="list-disc space-y-0.5 pl-4">
@@ -360,11 +365,7 @@ export function ReceiptGlyph({ receipt, provenance }) {
   const Icon = tone === 'err' ? ShieldX : tone === 'warn' ? ShieldAlert : ShieldCheck;
   // Same inline-Tailwind tone idiom as the verify row two lines below (and
   // Activity.jsx) - never a bespoke class with no CSS backing it.
-  const toneCls = tone === 'err'
-    ? 'text-red-600 dark:text-red-300'
-    : tone === 'warn'
-      ? 'text-amber-700 dark:text-amber-300'
-      : 'text-emerald-600 dark:text-emerald-300';
+  const toneCls = STATUS_INK[tone] || STATUS_INK.ok;
   return (
     <span title={label} aria-label={label}>
       <Icon size={13} className={toneCls} aria-hidden="true" />
@@ -406,6 +407,19 @@ function coverChips(post, t) {
 // rules-of-hooks). Guarding here keeps the body's hooks unconditional and in one fixed
 // order, and it makes the null case actually reach its `return null` instead of
 // throwing on the first `post.` read.
+// A failed action's alert, the Setup anatomy: the plain sentence ({ text, raw } from
+// humanizeAction) is the alert, and the raw server or engine line rides the house "?"
+// beside it, never inline and never inside the alert.
+function ActionError({ error }) {
+  if (!error) return null;
+  return (
+    <div className="flex items-start gap-1 rounded-xl bg-red-500/10 p-3">
+      <p role="alert" className="text-xs text-red-600 dark:text-red-300">{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
+
 export default function PostDetail(props) {
   if (!props.post) return null;
   return <PostDetailBody {...props} />;
@@ -420,11 +434,14 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // react-query dedupes by key, so this is a read of a cache the modal simply never looked at.
   const { data: health } = usePendpostHealth(true);
   const offlineLanes = unconnectedLanes(post, health?.setup);
-  // A lane-wide halt (post.lastFailure.halted, e.g. X 402 credits depleted) offers a
+  // The failure this post is failing with NOW (format.js liveFailure): a stale
+  // post.lastFailure on a rescheduled, healthy post drives no banner, verb or halt link.
+  const failure = liveFailure(post);
+  // A lane-wide halt (failure.halted, e.g. X 402 credits depleted) offers a
   // top-up link. The portal URL is single-sourced from the SAME setup payload the Setup
   // page reads (lib/playbooks.mjs -> setup.platforms[].playbook.portalUrl), so it never
   // drifts from a hardcoded copy; the link renders only once that value resolves.
-  const haltedLane = post.lastFailure?.halted ? post.lastFailure.lane : null;
+  const haltedLane = failure?.halted ? failure.lane : null;
   const haltPortalUrl = haltedLane
     ? (health?.setup?.platforms?.find((r) => r.platform === haltedLane)?.playbook?.portalUrl
         || (haltedLane === 'x' ? X_PORTAL_URL : null))
@@ -544,6 +561,12 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // The reddit flair, staged like every other quick-edit field. { id, text } move
   // together because flair_text only rides an EDITABLE template (the Composer's rule).
   const [flairDraft, setFlairDraft] = useState({ id: post?.redditFlairId || '', text: post?.redditFlairText || '' });
+  // Save shows only while something changed. A successful save clears dirty at once (rev
+  // bump -> draft re-sync), so the button is held through its own saving + "Saved" dwell;
+  // otherwise it would vanish mid-click and the owner would never see the confirmation.
+  const [saveHeld, setSaveHeld] = useState(false);
+  const saveHoldTimer = useRef(null);
+  useEffect(() => () => clearTimeout(saveHoldTimer.current), []);
   useEffect(() => {
     const seed = {};
     for (const f of contentFields) seed[f.key] = post?.[f.key] || '';
@@ -629,10 +652,10 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   const saveFields = async () => {
     // The Composer's own guards, mirrored: never save a post with no platform,
     // and a reply-to must be another post's id (the X lane fail-closes on junk).
-    if (platformsDirty && !platformsDraft.length) throw new Error(t('composer.error.noPlatform'));
+    if (platformsDirty && !platformsDraft.length) throw plainError(t('composer.error.noPlatform'));
     const xr = String(drafts.xReplyTo ?? '').trim();
     if (dirtyFields.some((f) => f.key === 'xReplyTo') && xr && (!/^[a-zA-Z0-9_-]+$/.test(xr) || xr === post.id)) {
-      throw new Error(t('composer.error.xReplyToFormat'));
+      throw plainError(t('composer.error.xReplyToFormat'));
     }
     const patch = {};
     for (const f of dirtyFields) {
@@ -649,7 +672,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
       try {
         await updatePost(post.campaign, post.id, post.rev, patch);
       } catch (err) {
-        throw new Error(err?.code === 'stale_write' ? t('composer.error.staleWrite') : (err?.message || t('postDetail.error.generic')));
+        throw err?.code === 'stale_write' ? plainError(t('composer.error.staleWrite')) : err;
       }
     }
     // Schedule goes through the reschedule mutation (NOT the PATCH) so the
@@ -657,11 +680,20 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     // for confirmation before its platform object is recreated).
     if (scheduleDirty) {
       const d = new Date(scheduleDraft);
-      if (Number.isNaN(d.getTime())) throw new Error(t('postDetail.reschedule.invalidDate'));
-      if (d.getTime() <= Date.now()) throw new Error(t('postDetail.reschedule.pastDate'));
-      await withConfirm((confirm2) => reschedulePost(post.campaign, post.id, d.toISOString(), confirm2));
+      if (Number.isNaN(d.getTime())) throw plainError(t('postDetail.reschedule.invalidDate'));
+      if (d.getTime() <= Date.now()) throw plainError(t('postDetail.reschedule.pastDate'));
+      await withConfirm((confirm2) => reschedulePost(post.campaign, post.id, d.toISOString(), confirm2), 'reschedule.confirm.body');
     }
     await queryClient.invalidateQueries({ queryKey: ['plans'] });
+  };
+  const onSave = async () => {
+    clearTimeout(saveHoldTimer.current);
+    setSaveHeld(true);
+    try {
+      await saveFields();
+    } finally {
+      saveHoldTimer.current = setTimeout(() => setSaveHeld(false), ACTION_DWELL_MS);
+    }
   };
 
   // X reply-chain context (xReplyTo): the sibling post this one threads under,
@@ -682,13 +714,32 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // retries with confirm: true. Declining throws the user-cancel sentinel so the
   // ActionButton snaps back to idle without an error flash. Each onAction below
   // owns its own loading/success/error state via its ActionButton.
-  const withConfirm = async (fn) => {
+  // Every failure here becomes ONE alert shape, { text, raw }: a plain sentence, with the raw
+  // server or engine line behind the "?" (ActionError). `guard` wraps each ActionButton's
+  // action so the alert is built from the thrown error itself (ActionButton's onError only
+  // hands over its message, or null when it had none, which used to leave no alert at all)
+  // and rethrows so the button still flashes. `say` is for a sentence written here.
+  const say = (text) => setError({ text, raw: null });
+  const fail = (err) => {
+    if (err?.canceled !== true) setError(humanizeAction(err, t, { fallbackKey: 'error.action' }));
+  };
+  const guard = (fn) => async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      fail(err);
+      throw err;
+    }
+  };
+  // `bodyKey` is the Studio's own sentence for the confirm: the engine's needs_confirm
+  // message is an English line for agents ("pass confirm: true"), never dialog copy.
+  const withConfirm = async (fn, bodyKey) => {
     setError(null);
     try {
       await fn(false);
     } catch (err) {
       if (err?.code === 'needs_confirm') {
-        const ok = await confirm({ title: t('postDetail.confirm.title'), body: withClientLine(err.message), confirmLabel: t('postDetail.confirm.continue'), danger: true });
+        const ok = await confirm({ title: t('postDetail.confirm.title'), body: withClientLine(t(bodyKey)), confirmLabel: t('postDetail.confirm.continue'), danger: true });
         if (!ok) throw { canceled: true };
         await fn(true);
       } else {
@@ -769,24 +820,20 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
       else await deletePost(post.campaign, post.id);
       showToast({ kind: 'success', text: t('postDetail.delete.toastSuccess') });
     } catch (err) {
-      // Rollback: the post reappears where it was; the toast carries the server's
-      // reason (e.g. a native platform cancel that failed, leaving the post intact).
-      // F3: the KNOWN refusal maps by its stable code - engine_failure here means the
-      // platform-side cancel failed - so the toast leads with a localized sentence
-      // and keeps the engine's own words as the quoted detail.
+      // Rollback: the post reappears where it was, and the toast says so in one plain
+      // sentence. F3: the KNOWN refusal maps by its stable code - engine_failure here
+      // means the platform-side cancel failed. The engine's own words ride the "?" only.
       queryClient.setQueryData(['plans'], prev);
-      const detail = err?.message || t('postDetail.error.generic');
-      showToast({
-        kind: 'error',
-        text: err?.code === 'engine_failure'
-          ? t('postDetail.delete.toastError.cancelFailed', { detail })
-          : t('postDetail.delete.toastError', { message: detail }),
-      });
+      const alert = err?.code === 'engine_failure'
+        ? { text: t('postDetail.delete.toastError.cancelFailed'), raw: err?.message || null }
+        : humanizeAction(err, t, { fallbackKey: 'postDetail.delete.toastError' });
+      // The { text, raw } shape: AppToast announces the sentence and puts the "?" outside the alert.
+      showToast({ kind: 'error', text: alert });
     } finally {
       queryClient.invalidateQueries({ queryKey: ['plans'] });
     }
   };
-  const onPark = () => withConfirm((confirm2) => unschedulePost(post.campaign, post.id, confirm2));
+  const onPark = () => withConfirm((confirm2) => unschedulePost(post.campaign, post.id, confirm2), 'postDetail.park.confirmBody');
   // One dialog (not two): the link prompt IS the confirmation - its body explains
   // the post leaves the queue and nothing is published. null = cancel (snaps the
   // button back to idle), empty string = mark with no link.
@@ -818,7 +865,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     // when the post reads back NOT live (liveCount 0) - throw so the ActionButton
     // shows the honest "Still not live" state instead of flashing a false green
     // "Verified" that the refetched verify-failed state then overwrites.
-    if (!res?.liveCount) throw new Error(t('postDetail.verify.notLive'));
+    if (!res?.liveCount) throw plainError(t('postDetail.verify.notLive'));
   };
   // Force-publish an overdue, approved post NOW instead of waiting for the next
   // scheduler sweep. Reuses the per-post publish-due path (confirm:true = a REAL
@@ -844,35 +891,47 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
         await reschedulePost(post.campaign, post.id, post.scheduledAt, false);
       } catch (err) {
         if (err?.code !== 'needs_confirm') throw err;
-        const ok2 = await confirm({ title: t('postDetail.confirm.title'), body: withClientLine(err.message), confirmLabel: t('postDetail.confirm.continue'), danger: true });
+        const ok2 = await confirm({ title: t('postDetail.confirm.title'), body: withClientLine(t('reschedule.confirm.body')), confirmLabel: t('postDetail.confirm.continue'), danger: true });
         if (!ok2) throw { canceled: true };
         await reschedulePost(post.campaign, post.id, post.scheduledAt, true);
       }
     }
     const res = await runPublishDue({ campaign: post.campaign, postId: post.id });
-    const { rows: mine, fired, held, halted, reason } = publishRunOutcome(res, post.id);
+    const { rows: mine, fired, held, halted, cloudWait, failure } = publishRunOutcome(res, post.id);
+    if (!fired && cloudWait && !failure) {
+      // The fail-closed cloud hold: the cloud already has this post and cannot answer the
+      // publish claim, so pendpost will not publish it from here until it answers.
+      refresh();
+      say(t('postDetail.publishNow.cloudClaimWait'));
+      throw { canceled: true };
+    }
     if (!fired && held) {
       // The cloud owns this lane inside its handoff grace: nothing failed, the
       // click just cannot fire locally yet. Say so instead of flashing success.
       refresh();
-      setError(t('postDetail.publishNow.cloudHeld'));
+      say(t('postDetail.publishNow.cloudHeld'));
       throw { canceled: true };
     }
-    if (!fired && halted && !reason) {
+    if (!fired && halted && !failure) {
       // The lane is paused by an account-level breaker (X 402 credits) and dropped
       // before dispatch, and NOTHING else genuinely failed (reason excludes the
       // informational markers). Change 1 hides the button on a post carrying its OWN
       // halt, so this fires only for the residual case (an overdue post on ANOTHER
       // post's block). Tell the truth and point at the resume control. When a real
-      // lane DID fail alongside the halt, `reason` is set and the failure branch below
+      // lane DID fail alongside the halt, `failure` is set and the failure branch below
       // wins - the actionable failure must not be masked by the halt marker.
       refresh();
-      setError(t('postDetail.publishNow.laneHalted'));
+      say(t('postDetail.publishNow.laneHalted'));
       throw { canceled: true };
     }
     if (!fired && mine.length) {
       refresh();
-      setError(reason ? t('postDetail.publishNow.failedReason', { reason }) : t('postDetail.publishNow.laneFailed', { lane: mine[0].lane }));
+      // The lane's own words are English engine text: the sentence says it plainly
+      // (humanizeFailure) and the raw line rides the "?".
+      const plain = failure ? humanizeFailure(failure, t) : null;
+      setError(plain
+        ? { text: t('postDetail.publishNow.failedReason', { reason: plain.text }), raw: plain.raw }
+        : { text: t('postDetail.publishNow.laneFailed', { lane: mine[0].lane }), raw: null });
       throw { canceled: true };
     }
     if (!mine.length) {
@@ -887,7 +946,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
       // For a held-post retry the "scheduler beat the click" story is impossible
       // (the scheduler skips a held post), so never blame it - say plainly that
       // the block was cleared but no lane fired, and point at Activity.
-      setError(t(retryHeld ? 'postDetail.publishNow.nothingRanHeld' : 'postDetail.publishNow.nothingRan'));
+      say(t(retryHeld ? 'postDetail.publishNow.nothingRanHeld' : 'postDetail.publishNow.nothingRan'));
       throw { canceled: true };
     }
     refresh();
@@ -905,13 +964,13 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     if (url === null) return;
     const clean = url.trim();
     if (!/^https?:\/\//.test(clean)) {
-      setError(t('postDetail.addExternalUrl.invalid'));
+      say(t('postDetail.addExternalUrl.invalid'));
       return;
     }
     try {
       await markPosted(post.campaign, post.id, clean);
     } catch (err) {
-      setError(err?.message || t('postDetail.error.generic'));
+      fail(err);
       return;
     }
     refresh();
@@ -927,14 +986,14 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // owns its own error handling rather than throwing into a button machine.
   const onCoverFile = async (file) => {
     if (!file || !/^image\//.test(file.type)) {
-      setError(t('postDetail.coverError.notImage'));
+      say(t('postDetail.coverError.notImage'));
       return;
     }
     setError(null);
     try {
       await uploadCover(post.campaign, post.id, file);
     } catch (err) {
-      setError(err?.message || t('postDetail.error.generic'));
+      fail(err);
     } finally {
       refresh();
     }
@@ -944,7 +1003,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     try {
       await clearCover(post.campaign, post.id);
     } catch (err) {
-      setError(err?.message || t('postDetail.error.generic'));
+      fail(err);
     } finally {
       refresh();
     }
@@ -959,7 +1018,8 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     try {
       await updatePost(post.campaign, post.id, post.rev, { path: value || null, file: null });
     } catch (err) {
-      setError(err?.code === 'stale_write' ? t('composer.error.staleWrite') : (err?.message || t('postDetail.error.generic')));
+      if (err?.code === 'stale_write') say(t('composer.error.staleWrite'));
+      else fail(err);
     } finally {
       refresh();
     }
@@ -968,22 +1028,14 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // An edited-since-approval post is approval:'approved' but needs a FRESH decision:
   // offer Approve (re-approve) again. Reject stays available so the owner can pull it.
   const canApprove = (post.approval !== 'approved' || post.editedSinceApproval) && post.derivedState !== 'posted';
-  // Spec 12 review (finding #4): a POSTED post's editedSinceApproval flag is
-  // publish-inert (the guardrail already holds - lanesOwed stays [] after an
-  // edit, nothing re-fires) and canApprove above already excludes 'posted', so the
-  // header's amber "Re-approve" pill can NEVER be cleared once a posted post is
-  // edited via the widened "Open in editor" gate - permanent noise, not a signal.
-  // Suppress the flag for the pill ONLY on a posted post; every non-posted post
-  // keeps the real flag (and the gate it drives) untouched.
-  const showEditedSinceApproval = post.derivedState !== 'posted' && post.editedSinceApproval;
   // Spec 48 R10 (V6): whether this project requires client sign-off, and the status
-  // pill state clamped so a post awaiting sign-off never reads as overdue-red (the
-  // clock rule, section 4.6); the ReviewStatusChip carries the awaiting/signed state.
+  // pill clamp so a post awaiting sign-off never reads as overdue-red (the clock rule,
+  // section 4.6); the ReviewStatusChip carries the awaiting/signed state. (Spec 12
+  // finding #4 still holds: a POSTED post never wears the amber "Re-approve" pill,
+  // because postStatusWord keeps 'posted' ahead of the edited refinement.)
   const { data: reviewConfig } = useConfig(true);
   const reviewRequired = Boolean(reviewConfig?.posting?.review?.required);
-  const reviewPillState = post.reviewPending && (post.derivedState === 'overdue' || post.derivedState === 'publish-failed')
-    ? null
-    : post.derivedState;
+  const reviewClamp = Boolean(post.reviewPending) && (post.derivedState === 'overdue' || post.derivedState === 'publish-failed');
   const canReject = post.approval !== 'rejected' && post.derivedState !== 'posted';
   const editable = post.derivedState !== 'posted';
   // Verify is meaningful once a post is handed off and past due (fired-assumed),
@@ -1004,23 +1056,21 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // a same-time reschedule, then refire. When the failing lane is OFFLINE the
   // retry would only refail: drop the publish CTA entirely and let the failure
   // banner's mark-as-posted own the recovery (post it yourself is then true).
-  const held = Boolean(post.publishHold);
-  const heldLaneOffline = held && offlineLanes.includes(post.publishHold?.lane);
   // ux-audit dim-1 row 35 / R1a: a Radar reply whose external target 404'd is
   // TERMINAL (the engine stamped radarReplyState='target_gone' and lanesOwed
   // skips the lane forever - lib/scheduler.mjs). A "Publish now" here would fire
   // zero lanes and then read like a scheduler bug (the exact B7 class), so the
   // state's one recovery verb is the failure banner's "Discard draft" instead.
   const targetGone = Boolean(post.radarReplyTo) && post.radarReplyState === 'target_gone' && post.derivedState !== 'posted';
-  // A lane halted by an account-level circuit breaker (X 402 credits, lib/state.mjs
-  // recordLaneBlock) is dropped before dispatch (lib/scheduler.mjs), so a bare
-  // "Publish now" would fire zero lanes and then read like a scheduler race (the B7
-  // class). The failure banner's "Lane fortsetzen" (resumeLane) is the sole recovery -
-  // mirrors postActions.canPublishNowPost. Change 3's lane_halted run row keeps the
-  // planner run-now dialog + an overdue post on ANOTHER post's block honest too.
-  const laneHalted = Boolean(post.lastFailure?.halted);
-  const canPublishNow = (post.derivedState === 'overdue' || post.derivedState === 'publish-failed') && post.approval === 'approved' && !post.editedSinceApproval && !heldLaneOffline && !targetGone && !laneHalted;
-  const retryHeld = canPublishNow && held;
+  // The ONE publish-now gate (postActions.canPublishNowPost, shared with the planner's
+  // row menu): no offline held lane, no gone target, no halted lane (X 402 credits: the
+  // banner's "Lane fortsetzen" is the recovery), and no failure the engine classified
+  // with a recovery (lastFailure.recovery: a credential refusal, X's reply restriction,
+  // a content block) - a retry there is refused again, so the banner offers the action
+  // that does recover it instead.
+  const canPublishNow = canPublishNowPost(post, { offlineLanes });
+  const retryHeld = isHeldRetry(post, canPublishNow);
+  const recovery = failure?.halted ? null : failure?.recovery || null;
   // The Comments thread panel (spec 02, Pattern P6) is offered on a POSTED post that
   // reached a comment-capable lane. Opening it pulls the comments on demand; the
   // reply loop is operator-in-the-loop (no auto-reply surface exists anywhere).
@@ -1131,7 +1181,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     if (actingRef.current) return;
     actingRef.current = true;
     try { await fn(); }
-    catch (err) { if (err?.canceled !== true) setError(err?.message || t('postDetail.error.generic')); }
+    catch (err) { fail(err); }
     finally { actingRef.current = false; }
   };
 
@@ -1165,14 +1215,24 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // can NAME it instead of staying silent; only url-carrying targets are auto-openable.
   const handOffTargets = offlineLanes.map((p) => handOffTarget(post, p, accounts)).filter(Boolean);
   const openableTargets = handOffTargets.filter((tgt) => tgt.url);
-  const onHandOff = async () => {
+  // The Destination section is the MANUAL lane's path, so it shows only when the post's one
+  // word (postStatusWord, the header pill) is "Du postest selbst". On "Blockiert", "Wird
+  // wiederholt" or a reconnect, a "paste it yourself" route contradicted the pill and the
+  // banner's one action and repeated the Platforms section.
+  const destinationTargets = postStatusWord(post, health?.setup) === 'postYourself'
+    ? handOffTargets.filter((tgt) => MANUAL_LANES.has(tgt.platform))
+    : [];
+  // `lanes` defaults to the offline lanes; the failure banner passes the refusing lane when
+  // the platform will never take this post through its API (X's reply restriction), which
+  // is the same hand-off: copy, post it yourself, mark it.
+  const onHandOff = async (lanes = offlineLanes) => {
     // Copy the lane's EFFECTIVE text (the same override precedence the engines
     // publish: xCaption/redditText/tgCaption/... else caption), not the bare caption -
     // otherwise the clipboard can differ from what the approval gate approved (gap G5).
     // The clipboard holds ONE text: with several offline lanes that resolve
     // differently, the shared caption is the only honest common ground, and each
     // destination link already prefills its own lane's text via handOffTarget.
-    const texts = [...new Set(offlineLanes.map((p) => effectiveLaneText(post, p)))];
+    const texts = [...new Set(lanes.map((p) => effectiveLaneText(post, p)))];
     const text = texts.length === 1 ? texts[0] : (post.caption || '').trim();
     if (text) await navigator.clipboard.writeText(text);
     const target = post.radarReplyTo?.url
@@ -1239,9 +1299,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   ].filter(Boolean);
 
   // A text post has a real card to preview when it targets a blog lane (article
-  // card) or carries a link/image (LinkedIn card); a pure text post has none.
+  // card) or is a LinkedIn post with a link (the one shape LinkedIn builds a card for,
+  // the SAME question PostPreview asks); any other text post previews nothing, so it
+  // must not reserve an empty right column (a Telegram post with a link did).
   const isText = post.type === 'text';
-  const textHasCard = isText && (post.platforms?.includes('wordpress') || post.platforms?.includes('ghost') || Boolean(post.link) || Boolean(post.image));
+  const textHasCard = isText && (post.platforms?.includes('wordpress') || post.platforms?.includes('ghost') || showsLinkedinCard(post));
 
   // ONE post-level delivery statement (replaces the per-platform "needs pendpost"
   // line). Summarize the effective mechanism across the still-pending platforms:
@@ -1272,7 +1334,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // read identically whether the lane was live or had never been authorized - and it implies
   // that running pendpost is enough, which is exactly wrong. Same line, same place: the
   // section already speaks to delivery, so this relabels it rather than adding a badge.
-  // US-PRE-10/11: an UNCONNECTED lane is a per-row "Blocked - connect <lane>"
+  // US-PRE-10/11: an UNCONNECTED lane is a per-row "Blocked: connect <lane>"
   // fact (the broken-lanes error model: what, why, one recovering action) rather
   // than a summary sentence stacked over rows still reading "Pending" - the old
   // offline-tone sentence + the warning-list row said the same thing twice. The
@@ -1333,6 +1395,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   const DEST_PILL_BRAND = `${DEST_PILL} bg-brand/10 text-brand ring-brand/30 hover:bg-brand/20 dark:bg-brand-light/10 dark:text-brand-light dark:ring-brand-light/30 dark:hover:bg-brand-light/20`;
 
   // The scrollable body content shared by the two-column and single-column layouts.
+  const failureCopy = failure ? humanizeFailure(failure, t) : null;
+  // D1: a failure pendpost is still retrying on its own heals without the owner, so its
+  // banner is neutral ink (red means act now). failedDisplayKey is the one judge, the same
+  // one the status pill uses; a target_gone reply is never "retrying" (nothing will retry).
+  const failureRetrying = !targetGone && failedDisplayKey(failure) === 'publish-retrying';
   const bodyLeft = (
     <>
       {/* WHY IT DID NOT PUBLISH, above everything. The reason has always existed - the
@@ -1342,25 +1409,39 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
           scheduler that is already running. Three answers in one block: what happened
           (the lane refused it), why (the platform's own sentence, quoted rather than
           paraphrased into something less true), and the one action that gets out of it. */}
-      {post.lastFailure || targetGone ? (
-        <div role="alert" className="space-y-2 rounded-xl bg-red-500/10 px-3 py-2.5 ring-1 ring-red-500/25">
-          <p className="flex items-start gap-1.5 text-xs font-bold text-red-700 dark:text-red-300">
-            <ShieldX size={13} aria-hidden="true" className="mt-px shrink-0" />
+      {failure || targetGone ? (
+        <div
+          role={failureRetrying ? 'status' : 'alert'}
+          className={`space-y-2 rounded-xl px-3 py-2.5 ring-1 ${failureRetrying ? 'bg-zinc-500/10 ring-zinc-500/20' : 'bg-red-500/10 ring-red-500/25'}`}
+        >
+          <p className={`flex items-start gap-1.5 text-xs font-bold ${failureRetrying ? STATUS_INK.ok : 'text-red-700 dark:text-red-300'}`} title={failureCopy && !failureCopy.known ? failureCopy.raw || undefined : undefined}>
+            {failureRetrying
+              ? <RefreshCw size={13} aria-hidden="true" className="mt-px shrink-0" />
+              : <ShieldX size={13} aria-hidden="true" className="mt-px shrink-0" />}
             {/* target_gone outranks the generic refusal title: the lane did not merely
                 refuse this reply - the thread it answers no longer exists, and that is
                 the fact the operator must act on (row 35). */}
             {targetGone
               ? t('postDetail.failure.targetGoneTitle')
-              : t('postDetail.failure.title', { lane: PLATFORM_META[post.lastFailure?.lane]?.label || post.lastFailure?.lane || t('postDetail.failure.laneUnknown') })}
+              // A long fail-closed cloud hold: no platform refused anything, the cloud
+              // has the post and is not answering the publish claim.
+              : recovery === 'cloud' ? t('postDetail.failure.cloudWaitTitle')
+              : t('postDetail.failure.title', { lane: PLATFORM_META[failure?.lane]?.label || failure?.lane || t('postDetail.failure.laneUnknown') })}
             {/* WHEN it failed, or a day-old refusal reads as breaking news: the banner
                 shows the LAST recorded failure, which for a rescheduled post can be from
                 before the fix that rescued it. Same fmtRelative idiom as the header. */}
-            {post.lastFailure?.at ? (
-              <span className="mt-px shrink-0 font-normal opacity-70">{fmtRelative(post.lastFailure.at)}</span>
+            {failure?.at ? (
+              <span className="mt-px shrink-0 font-normal opacity-70">{fmtRelative(failure.at)}</span>
             ) : null}
           </p>
-          {post.lastFailure?.message ? (
-            <p className="text-[11px] text-red-700/90 dark:text-red-300/80">{post.lastFailure.message}</p>
+          {/* WHY, in one plain sentence (lib/failureCopy.js): the platform's raw
+              "lane: POST /path: HTTP 403 - ..." string is kept for the tooltip only. A
+              failure nothing specific is known about adds no line: it would only repeat
+              the headline above. */}
+          {failureCopy?.known ? (
+            // D2: one red per banner. The frame and title carry the alarm; the plain
+            // sentence under them is neutral text.
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-300" title={failureCopy.raw || undefined}>{failureCopy.text}</p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
             <p className="min-w-0 flex-1 text-[11px] text-zinc-600 dark:text-zinc-300">
@@ -1373,9 +1454,12 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                   Terminal without that retry (cloud cap spent, failing lane offline):
                   the way out really is the owner's hands. Still retrying: say so. */}
               {targetGone ? t('postDetail.failure.targetGone')
-                : post.lastFailure.halted ? t('postDetail.failure.creditsHalted')
+                : failure.halted ? t('postDetail.failure.creditsHalted')
+                // No retry can land it (lastFailure.recovery, engine-classified): say it
+                // waits on the operator and what they do, never "tries again on its own".
+                : recovery ? t(`postDetail.failure.needs.${recovery}`, { lane: laneLabel(failure.lane) || t('postDetail.failure.laneUnknown') })
                 : retryHeld ? t('postDetail.failure.heldRetry')
-                : post.lastFailure.terminal ? t('postDetail.failure.stopped')
+                : failure.terminal ? t('postDetail.failure.stopped')
                 : t('postDetail.failure.retrying')}
             </p>
             {/* The state's ONE recovery verb, on the banner (never an overflow hunt).
@@ -1389,10 +1473,9 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                 variant="danger"
                 icon={Trash2}
                 labels={{ idle: t('postDetail.failure.discardIdle'), loading: t('postDetail.failure.discardLoading'), success: t('postDetail.failure.discardSuccess'), error: t('postDetail.error.generic') }}
-                onAction={onDelete}
-                onError={setError}
+                onAction={guard(onDelete)}
               />
-            ) : post.lastFailure.halted ? (
+            ) : failure.halted ? (
               /* The lane is circuit-broken (e.g. X 402 credits depleted). No per-post
                  verb recovers it - the operator tops up the account (portal link, single-
                  sourced from the setup payload) and then resumes the whole lane, the SAME
@@ -1412,31 +1495,60 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                   variant="subtle"
                   icon={PlugZap}
                   labels={{ idle: t('readiness.resumeLane'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }}
-                  onAction={async () => {
+                  onAction={guard(async () => {
                     // Consume the recheck signal: resumeLane clears the block, re-fires
                     // the lane's due posts, and reports whether credits are back. If the
                     // re-fire hit the same 402 the block re-armed (stillDepleted) - say so
                     // instead of flashing success, or the operator reads "resumed" while
                     // the post is still halted (the exact dishonest signal this avoids).
-                    const r = await resumeLane(post.lastFailure.lane);
+                    const r = await resumeLane(failure.lane);
                     await queryClient.invalidateQueries({ queryKey: ['health'] });
                     await queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
                     await queryClient.invalidateQueries({ queryKey: ['plans'] });
                     if (r?.stillDepleted) {
-                      setError(t('postDetail.resume.stillDepleted'));
+                      say(t('postDetail.resume.stillDepleted'));
                       throw { canceled: true }; // no success flash; the banner carries the truth
                     }
-                  }}
-                  onError={setError}
+                  })}
                 />
               </>
-            ) : post.lastFailure.terminal && !retryHeld ? (
+            ) : recovery === 'reconnect' && typeof onNavigate === 'function' ? (
+              /* A cloud credential refusal: the cloud publishes nothing on this lane until
+                 it is reconnected. The cloud issue row's one action, same destination:
+                 Setup, focused on this lane. */
+              <Button size="sm" variant="subtle" className={TAP_TARGET} onClick={() => onNavigate('setup', failure.lane)}>
+                <PlugZap size={12} aria-hidden="true" />
+                {t('connection.issue.reconnect')}
+              </Button>
+            ) : recovery === 'cloud' && typeof onNavigate === 'function' ? (
+              /* A long fail-closed cloud hold (lib/plans.mjs CLOUD_CLAIM_WAIT_NEEDS_YOU_MS):
+                 the cloud has the post and has not answered the publish claim for hours.
+                 Only a working cloud connection ends it, so the one verb is the cloud page. */
+              <Button size="sm" variant="subtle" className={TAP_TARGET} onClick={() => onNavigate('cloud')}>
+                <PlugZap size={12} aria-hidden="true" />
+                {t('postDetail.failure.openCloud')}
+              </Button>
+            ) : recovery === 'edit' && editable ? (
+              /* The content cannot publish as authored; an edit clears the hold. */
+              <Button size="sm" variant="subtle" className={TAP_TARGET} onClick={() => onEdit(post)}>
+                <Pencil size={12} aria-hidden="true" />
+                {t('postDetail.action.openEditor')}
+              </Button>
+            ) : recovery === 'manual' ? (
+              /* The platform never takes this through its API (X's reply restriction):
+                 the hand-off pair, copy and open the thread, then record it. Distinct keys
+                 so the copy's success state never paints onto the mark step. */
+              handedOff ? (
+                <ActionButton key="manual-done" variant="manual" icon={CheckCheck} labels={{ idle: t('postDetail.handOff.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }} onAction={guard(() => onMarkPosted(isMixed ? failure.lane : undefined))} />
+              ) : (
+                <ActionButton key="manual-copy" variant="manual" icon={ClipboardCopy} labels={{ idle: t('postDetail.handOff.copyIdle'), loading: t('postDetail.handOff.copyLoading'), success: t('postDetail.handOff.copySuccess'), error: t('postDetail.error.generic') }} onAction={guard(() => onHandOff([failure.lane].filter(Boolean)))} />
+              )
+            ) : failure.terminal && !retryHeld ? (
               <ActionButton
                 variant="subtle"
                 icon={CheckCheck}
-                labels={{ idle: (isMixed && post.lastFailure.lane) ? t('postDetail.action.markLaneIdle', { lane: PLATFORM_META[post.lastFailure.lane]?.label || post.lastFailure.lane }) : t('postDetail.action.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }}
-                onAction={() => onMarkPosted((isMixed && post.lastFailure.lane) ? post.lastFailure.lane : undefined)}
-                onError={setError}
+                labels={{ idle: (isMixed && failure.lane) ? t('postDetail.action.markLaneIdle', { lane: PLATFORM_META[failure.lane]?.label || failure.lane }) : t('postDetail.action.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }}
+                onAction={guard(() => onMarkPosted((isMixed && failure.lane) ? failure.lane : undefined))}
               />
             ) : null}
           </div>
@@ -1479,11 +1591,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
             ) : null}
           </div>
         </Section>
-      ) : handOffTargets.length > 0 && post.derivedState !== 'posted' ? (
+      ) : destinationTargets.length > 0 && post.derivedState !== 'posted' ? (
         <div className="space-y-1.5">
           <span className={EYEBROW}>{t('postDetail.handOff.destinationTitle')}</span>
           <div className="flex flex-wrap items-center gap-2">
-            {handOffTargets.map((tgt) => {
+            {destinationTargets.map((tgt) => {
               const M = PLATFORM_META[tgt.platform];
               const name = tgt.label || M?.label || tgt.platform;
               if (tgt.url) {
@@ -1510,12 +1622,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                   </button>
                 );
               }
-              return (
-                <span key={tgt.platform} className={`${DEST_PILL} text-zinc-500 ring-zinc-900/10 dark:text-zinc-400 dark:ring-white/10`}>
-                  {M ? <M.Icon size={13} className={M.color} aria-hidden="true" /> : null}
-                  {t('postDetail.handOff.destinationOnly', { target: name })}
-                </span>
-              );
+              return null;
             })}
           </div>
         </div>
@@ -1674,20 +1781,27 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
             // US-PRE-10: a lane that cannot publish never says "Pending". An
             // unconnected lane's row reads the blocked-class label with the one
             // recovering action (the broken-lanes error model), so the row and
-            // the truth agree.
-            const blocked = state.tier === 'pending' && offlineLanes.includes(p);
+            // the truth agree. The manual paste lane (MANUAL_LANES) reads the hand-off word
+            // instead, the same word as the header pill (postStatusWord): posting it by
+            // hand is its path, not a block.
+            const offline = state.tier === 'pending' && offlineLanes.includes(p);
+            const paste = offline && MANUAL_LANES.has(p);
+            const blocked = offline && !paste;
+            // D8: ONE "{platform} verbinden" control per blocked lane. When the
+            // Before-publishing card offers its setup link, that link is the control and
+            // this row says only "Blockiert"; otherwise the row's own words are the control.
+            const canNavigate = typeof onNavigate === 'function';
+            const cardLink = canNavigate && setupLinkOffered(platformValidate, p, onNavigate);
             const { Icon } = meta;
             const verify = platformVerify(post, p, t);
             const stateCls = state.tier === 'done'
-              ? 'text-emerald-600 dark:text-emerald-300'
+              ? STATUS_INK.ok
               : state.tier === 'warn' || blocked
                 ? 'text-amber-700 dark:text-amber-300'
-                : 'text-zinc-500 dark:text-zinc-400';
-            const verifyCls = verify?.tone === 'ok'
-              ? 'text-emerald-600 dark:text-emerald-300'
-              : verify?.tone === 'err'
-                ? 'text-red-600 dark:text-red-300'
-                : 'text-amber-700 dark:text-amber-300';
+                : paste
+                  ? 'text-sky-700 dark:text-sky-300'
+                  : 'text-zinc-500 dark:text-zinc-400';
+            const verifyCls = STATUS_INK[verify?.tone] || STATUS_INK.warn;
             const VerifyIcon = verify?.tone === 'ok' ? ShieldCheck : verify?.tone === 'err' ? ShieldX : ShieldAlert;
             const verifySr = verify?.tone === 'ok'
               ? t('postDetail.verify.toneOk')
@@ -1713,10 +1827,22 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                   </span>
                   <span className={`flex items-center gap-1 text-[11px] ${stateCls}`}>
                     {state.tier === 'done' ? <CheckCircle2 size={11} aria-hidden="true" /> : null}
-                    {blocked ? <PlugZap size={11} aria-hidden="true" /> : null}
+                    {offline ? <PlugZap size={11} aria-hidden="true" /> : null}
                     {state.tier === 'done' ? <span className="sr-only">{t('postDetail.platform.publishedSr')}: </span> : null}
                     {state.tier === 'warn' ? <span className="sr-only">{t('postDetail.platform.warnSr')}: </span> : null}
-                    {blocked ? t('postDetail.delivery.blocked', { platform: meta.label }) : state.text}
+                    {blocked ? (
+                      cardLink ? t('status.blocked')
+                      : canNavigate ? (
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('setup', p)}
+                          className={`${TAP_TARGET} rounded font-bold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
+                        >
+                          {t('postDetail.delivery.blocked', { platform: meta.label })}
+                        </button>
+                      )
+                      : t('postDetail.delivery.blocked', { platform: meta.label })
+                    ) : paste ? t('approval.postYourself') : state.text}
                   </span>
                   {/* Spec 51 (D2): the static signed-receipt glyph, sourced from
                       post.receipt[p] (plan_get, no new call). Once the operator runs
@@ -1728,10 +1854,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                       provenance={verifyResult?.verify?.platforms?.[p]}
                     />
                   ) : null}
-                  {/* One control per job: the wrench yields when the
-                      Before-publishing card already offers the labelled
-                      "Set up <lane>" link for this same lane. */}
-                  {blocked && typeof onNavigate === 'function' && !setupLinkOffered(platformValidate, p, onNavigate) ? (
+                  {/* One control per job: a blocked lane's control is its own row words
+                      (above) or the card's link, never this wrench. The wrench stays only
+                      on a manual paste lane, where connecting is an optional upgrade, and
+                      yields when the Before-publishing card already offers the link. */}
+                  {paste && canNavigate && !cardLink ? (
                     <Tip label={t('approvals.card.connectTip', { platforms: meta.label })}>
                       <button
                         type="button"
@@ -1905,8 +2032,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                   icon={Camera}
                   ariaLabel={t('postDetail.cover.frameTip')}
                   labels={{ idle: t('postDetail.cover.frameIdle', { seconds: coverSec.toFixed(1) }), loading: t('postDetail.cover.frameLoading'), success: t('postDetail.cover.frameSuccess'), error: t('postDetail.error.generic') }}
-                  onAction={onCoverFrame}
-                  onError={setError}
+                  onAction={guard(onCoverFrame)}
                 />
               </Tip>
               <Tip label={t('postDetail.cover.uploadTip')}>
@@ -1975,7 +2101,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     {canZap && showZap ? (
       <ZapModal campaign={post.campaign} postId={post.id} onClose={() => setShowZap(false)} />
     ) : null}
-    <Modal onClose={onClose} label={t('postDetail.dialogLabel', { id: post.id })} width="max-w-4xl">
+    <Modal onClose={onClose} label={t('postDetail.dialogLabel', { id: postDisplayTitle(post) })} width="max-w-4xl">
       {/* Header (never scrolls): ONE dense identity row - client signage + status +
           approval + platform glyphs + schedule + campaign meta, all side by side to
           use the width - then only the rare thread/manual sublines. Triage + close
@@ -1985,13 +2111,12 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
               <ClientBand client={activeClient} />
-              {/* `short` label ("Geplant", not "Geplant - pendpost"): the cloud-blind
-                  delivery suffix is dropped here - the one delivery statement in the
-                  Platforms section carries the honest, cloud-aware mechanism instead. */}
-              {/* V6: a post awaiting client sign-off never reads as overdue-red (spec
-                  48 section 4.6); the awaiting chip carries the honest state. */}
-              {reviewPillState ? <StatusPill state={reviewPillState} short /> : null}
-              <ApprovalPill approval={post.approval} editedSinceApproval={showEditedSinceApproval} handOff={handOff} />
+              {/* The SAME one-word pill as the planner card and list row (postStatusWord),
+                  so a post never reads "Freigegeben" there and "Geplant" here. The delivery
+                  mechanism stays with the one delivery statement in the Platforms section.
+                  V6: a post awaiting client sign-off never reads as overdue-red (spec 48
+                  section 4.6); the awaiting chip carries the honest state. */}
+              {reviewClamp ? null : <PostStatusPill post={post} setup={health?.setup} />}
               <ReviewStatusChip post={post} />
               <span className="flex items-center gap-1">
                 {post.platforms.map((p) => {
@@ -2009,8 +2134,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
               {/* No type here: the Format select a few lines down is the editable,
                   authoritative one, so repeating it in the header was pure duplication.
                   The approval rows DO carry it (there is no select to read there). */}
-              <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
+              {/* The post's human name (title, else its first caption line), never the raw
+                  slug: "launch · x-refused" read like infrastructure. The raw campaign / post
+                  ids stay on the tooltip for the operator who needs them. */}
+              <span className="min-w-0 max-w-full truncate text-[11px] text-zinc-500 dark:text-zinc-400" title={`${post.campaign} / ${post.id}`}>
+                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: postDisplayTitle(post) })}
               </span>
               {/* Advisory brand-lint badge (read-only): silent unless a target
                   platform would trip an error; never alters approve/reject. */}
@@ -2091,9 +2219,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
         </p>
       ) : null}
 
-      {error ? (
-        <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p>
-      ) : null}
+      <ActionError error={error} />
       {/* Mastodon pin toggle (spec 31): a non-visual confirmation for screen-reader
           users, mirroring the verify announce region above (post.verify.at). */}
       {mastodonPinAnnounce ? (
@@ -2128,7 +2254,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
           {menuItems.length ? (
             <Popover>
               <PopoverTrigger asChild>
-                <button type="button" aria-label={t('postDetail.more')} className={`${ACTION_BTN} text-zinc-500 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60`}>
+                <button type="button" aria-label={t('postDetail.more')} className={`${ACTION_BTN} text-zinc-500 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60 ${TAP_TARGET}`}>
                   <MoreHorizontal size={16} aria-hidden="true" />
                 </button>
               </PopoverTrigger>
@@ -2162,8 +2288,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                 // for sign-off; the write is unchanged (onApprove -> approvePost).
                 ? { idle: t('review.action.sendForSignoff'), loading: t('review.action.sending'), success: t('review.action.sent'), error: t('approvals.action.error') }
                 : { idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
-              onAction={onApprove}
-              onError={setError}
+              onAction={guard(onApprove)}
             />
           ) : null}
           {/* The lane is not connected, so pendpost cannot post this - the operator can.
@@ -2174,9 +2299,9 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
               A remount resets the status with the label. */}
           {primary === 'handOff' ? (
             handedOff ? (
-              <ActionButton key="handoff-done" variant="manual" size="md" icon={CheckCheck} labels={{ idle: t('postDetail.handOff.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }} onAction={onMarkPosted} onError={setError} />
+              <ActionButton key="handoff-done" variant="manual" size="md" icon={CheckCheck} labels={{ idle: t('postDetail.handOff.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }} onAction={guard(onMarkPosted)} />
             ) : (
-              <ActionButton key="handoff-copy" variant="manual" size="md" icon={ClipboardCopy} labels={{ idle: t('postDetail.handOff.copyIdle'), loading: t('postDetail.handOff.copyLoading'), success: t('postDetail.handOff.copySuccess'), error: t('postDetail.error.generic') }} onAction={onHandOff} onError={setError} />
+              <ActionButton key="handoff-copy" variant="manual" size="md" icon={ClipboardCopy} labels={{ idle: t('postDetail.handOff.copyIdle'), loading: t('postDetail.handOff.copyLoading'), success: t('postDetail.handOff.copySuccess'), error: t('postDetail.error.generic') }} onAction={guard(onHandOff)} />
             )
           ) : null}
           {/* Fix B7: the SAME slot, relabeled per failure class - a held post's click
@@ -2185,11 +2310,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
           {primary === 'publishNow' ? (
             retryHeld ? (
               <Tip label={t('postDetail.action.tryAgainTip')}>
-                <ActionButton key="publish-retry" variant="success" size="md" icon={RefreshCw} ariaLabel={t('postDetail.action.tryAgainTip')} labels={{ idle: t('postDetail.action.tryAgainIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
+                <ActionButton key="publish-retry" variant="success" size="md" icon={RefreshCw} ariaLabel={t('postDetail.action.tryAgainTip')} labels={{ idle: t('postDetail.action.tryAgainIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={guard(onPublishNow)} />
               </Tip>
             ) : (
               <Tip label={t('postDetail.action.publishNowTip')}>
-                <ActionButton key="publish-now" variant="success" size="md" icon={Send} ariaLabel={t('postDetail.action.publishNowTip')} labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
+                <ActionButton key="publish-now" variant="success" size="md" icon={Send} ariaLabel={t('postDetail.action.publishNowTip')} labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={guard(onPublishNow)} />
               </Tip>
             )
           ) : null}
@@ -2199,16 +2324,16 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                   reads "Re-check" - the state-correct recovery verb (the read-back
                   said not-live; the fix is to read again), mirroring how a held post's
                   slot becomes "Try again". Same action, honest label. */}
-              <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckTip' : 'postDetail.action.verifyTip')} labels={{ idle: t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckIdle' : 'postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.action.verifyNotLive') }} onAction={onVerify} onError={setError} />
+              <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckTip' : 'postDetail.action.verifyTip')} labels={{ idle: t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckIdle' : 'postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.action.verifyNotLive') }} onAction={guard(onVerify)} />
             </Tip>
           ) : null}
 
-          {/* ... and Save is the PERMANENT footer action for an editable post:
-              subdued (disabled) while nothing changed, lit once any field is
-              dirty. One rev-guarded PATCH + the reschedule mutation when the
-              schedule moved; success clears itself (rev bump -> draft re-sync). */}
-          {editable ? (
-            <ActionButton variant="success" size="md" icon={CheckCircle2} disabled={!anyDirty} labels={{ idle: t('postDetail.action.saveIdle'), loading: t('postDetail.action.saveLoading'), success: t('postDetail.action.saveSuccess'), error: t('postDetail.error.generic') }} onAction={saveFields} onError={setError} />
+          {/* ... and Save appears only once a field is dirty (minimal chrome: no
+              disabled button on a clean post). One rev-guarded PATCH + the reschedule
+              mutation when the schedule moved; success clears dirty (rev bump -> draft
+              re-sync) and the button leaves after its "Saved" dwell (saveHeld). */}
+          {editable && (anyDirty || saveHeld) ? (
+            <ActionButton variant="success" size="md" icon={CheckCircle2} labels={{ idle: t('postDetail.action.saveIdle'), loading: t('postDetail.action.saveLoading'), success: t('postDetail.action.saveSuccess'), error: t('postDetail.error.generic') }} onAction={guard(onSave)} />
           ) : null}
         </div>
       </div>

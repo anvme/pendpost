@@ -81,7 +81,7 @@ describe('PlatformBlockers presubmit merge (spec 09)', () => {
         platforms: { reddit: { ready: false, problems: [{ code: 'restricted', text: 'restricted' }], warnings: [] } },
       },
     }, 'de-CH');
-    expect(screen.getByText('Dieser Subreddit ist eingeschränkt - das Konto darf hier evtl. nicht posten')).toBeInTheDocument();
+    expect(screen.getByText('Dieser Subreddit ist eingeschränkt. Das Konto darf hier evtl. nicht posten')).toBeInTheDocument();
     // The English API token must never surface in the German sentence.
     expect(screen.queryByText(/restricted/)).not.toBeInTheDocument();
   });
@@ -94,7 +94,7 @@ describe('PlatformBlockers presubmit merge (spec 09)', () => {
         platforms: { reddit: { ready: false, problems: [{ code: 'restricted', text: 'private' }], warnings: [] } },
       },
     }, 'de-CH');
-    expect(screen.getByText('Dieser Subreddit ist privat - das Konto darf hier evtl. nicht posten')).toBeInTheDocument();
+    expect(screen.getByText('Dieser Subreddit ist privat. Das Konto darf hier evtl. nicht posten')).toBeInTheDocument();
     expect(screen.queryByText(/private/)).not.toBeInTheDocument();
   });
 
@@ -161,7 +161,7 @@ describe('PlatformBlockers presubmit merge (spec 09)', () => {
       onNavigate: () => {},
     }, 'en');
     // The setup link collapses the raw platformValidate string...
-    expect(screen.getByRole('button', { name: 'Set up Reddit' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Reddit' })).toBeInTheDocument();
     expect(screen.queryByText('Reddit not connected')).not.toBeInTheDocument();
     // ...but the presubmit problem still surfaces alongside it.
     expect(screen.getByText(/This subreddit is restricted/)).toBeInTheDocument();

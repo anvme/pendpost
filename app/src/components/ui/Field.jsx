@@ -11,13 +11,13 @@
 //
 // Contract: the label is ALWAYS a block row above the input; the input is ALWAYS
 // w-full (width is the parent grid's job, never the field's); an optional help
-// tip sits beside the label, an optional right-inside adornment (a save-state
+// "?" sits beside the label as the shared InfoTip (hover opens it, a tap or
+// Enter/Space pins it, the help is the trigger's description; 44px hit area), an optional right-inside adornment (a save-state
 // glyph) reserves pr-9, and hint/error render below with the aria contract the
 // hand-rolled fields used (aria-invalid, aria-describedby, role="alert").
 import { useId } from 'react';
-import { HelpCircle } from 'lucide-react';
 import { FIELD, FIELD_ERR } from './tokens.js';
-import { Tip } from './Tooltip.jsx';
+import InfoTip from './InfoTip.jsx';
 
 // Label sits one shade darker than the old zinc-500: at 11px on a tinted inner
 // surface (zinc-100) zinc-500 measures ~4.4:1, under AA - zinc-600 clears it, and
@@ -26,8 +26,8 @@ const LABEL = 'text-[11px] text-zinc-600 dark:text-zinc-400';
 
 export default function Field({
   label,
-  help = null,          // tooltip string -> a reachable HelpCircle beside the label
-  helpLabel = null,     // aria-label for the help button (defaults to "Help: <label>")
+  help = null,          // help string -> an InfoTip "?" beside the label (hover, tap, keyboard)
+  helpLabel = null,     // accessible name of the help trigger (defaults to "Help: <label>")
   hint = null,          // muted helper line below the field
   error = null,         // error line below the field (role=alert), also rings the input
   adornment = null,     // right-inside node (e.g. a save spinner/check) - reserves pr-9
@@ -49,19 +49,12 @@ export default function Field({
     <div className={`space-y-1 ${dimmed ? 'opacity-50' : ''}`}>
       <div className="flex items-center gap-1.5">
         <label htmlFor={id} className={LABEL}>{label}</label>
-        {help ? (
-          <Tip label={help}>
-            <button
-              type="button"
-              aria-label={helpLabel || `Help: ${label}`}
-              className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300"
-            >
-              <HelpCircle size={12} aria-hidden="true" />
-            </button>
-          </Tip>
-        ) : null}
+        <InfoTip label={help} triggerLabel={helpLabel || `Help: ${label}`} />
       </div>
-      <span className="relative block">
+      {/* z-[1]: the input box sits above every TAP_TARGET ::after box, so the next row's
+          help "?" (whose hit box reaches ~2px past a gap-y-3 row gap) never takes a tap
+          meant for this input. */}
+      <span className="relative z-[1] block">
         <input
           id={id}
           type={resolvedType}

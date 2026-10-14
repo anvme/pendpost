@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { reschedulePost } from './api.js';
 import { useConfirm } from '../components/ui/confirm.jsx';
 import { useT } from './i18n.js';
+import { humanizeAction } from './failureCopy.js';
 
 // Immutably move one post to a new scheduledAt inside the nested plans cache
 // ({ campaigns: [{ posts: [...] }] }). Returns the plans object unchanged if the
@@ -60,7 +61,8 @@ export function useReschedule() {
         // card does not snap back and then jump forward again on confirm.
         const ok = await confirm({
           title: t('postDetail.confirm.title'),
-          body: err.message || t('reschedule.confirm.body'),
+          // The Studio's own sentence: the server's needs_confirm line is English engine text.
+          body: t('reschedule.confirm.body'),
           confirmLabel: t('postDetail.confirm.continue'),
           danger: true,
         });
@@ -78,7 +80,8 @@ export function useReschedule() {
         queryClient.setQueryData(['plans'], prev);
         await confirm({
           title: t('reschedule.failed.title'),
-          body: err.message || t('reschedule.failed.body'),
+          // One plain sentence (a timeout / offline pendpost keeps its own), never the raw line.
+          body: humanizeAction(err, t, { fallbackKey: 'reschedule.failed.body' }).text,
           confirmLabel: t('reschedule.failed.confirmLabel'),
           cancelLabel: t('app.action.close'),
         });

@@ -4,6 +4,8 @@ import { Zap, AlertCircle, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { sendZap } from '../lib/api.js';
 import { Modal, INNER_SURFACE, EYEBROW, PLATFORM_META, DISABLED_PRIMARY, FIELD } from './ui.jsx';
 import { useT } from '../lib/i18n.js';
+import { humanizeAction } from '../lib/failureCopy.js';
+import InfoTip from './ui/InfoTip.jsx';
 
 // Nostr zaps (spec 20, the MONEY path). A lightweight modal opened from the ⋯ menu
 // on a POSTED nostr note: enter an amount (sats) + an optional comment, submit, and
@@ -42,7 +44,8 @@ export default function ZapModal({ campaign, postId, onClose }) {
       queryClient.invalidateQueries({ queryKey: ['insights'] });
     } catch (err) {
       if (err?.code === 'not_configured') setNotConfigured(true);
-      else setError(err?.message || t('zap.error'));
+      // The plain sentence is the alert; the wallet's or engine's raw line rides the "?".
+      else setError(humanizeAction(err, t, { fallbackKey: 'zap.error' }));
     } finally {
       setBusy(false);
     }
@@ -92,9 +95,12 @@ export default function ZapModal({ campaign, postId, onClose }) {
             />
           </div>
           {error ? (
-            <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-              <AlertCircle size={11} aria-hidden="true" /> {error}
-            </p>
+            <div className="flex items-start gap-1">
+              <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
+                <AlertCircle size={11} aria-hidden="true" /> {error.text}
+              </p>
+              <InfoTip label={error.raw} />
+            </div>
           ) : null}
           <button
             type="submit"

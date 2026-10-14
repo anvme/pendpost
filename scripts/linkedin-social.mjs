@@ -29,7 +29,8 @@
  *
  * Credentials live in gitignored .env (same convention as meta-social.mjs):
  * LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, LINKEDIN_ACCESS_TOKEN, LINKEDIN_REFRESH_TOKEN,
- * LINKEDIN_TOKEN_EXPIRES_AT (epoch ms). LINKEDIN_ORG_URN and LINKEDIN_API_VERSION are optional
+ * LINKEDIN_TOKEN_EXPIRES_AT (epoch ms), LINKEDIN_REFRESH_TOKEN_EXPIRES_AT (epoch ms, when LinkedIn
+ * returns refresh_token_expires_in). LINKEDIN_ORG_URN and LINKEDIN_API_VERSION are optional
  * env overrides for the constants below.
  */
 import fs from 'node:fs';
@@ -40,6 +41,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { handOffAfterCeremony } from '../lib/cli-cloud-handoff.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
@@ -47,7 +49,7 @@ import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
 import { avSyncBlocker, avSyncBlockRow, findCoverSibling } from '../lib/assets.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -63,6 +65,17 @@ const OAUTH = 'https://www.linkedin.com/oauth/v2';
 // person URN (userinfo `sub`); w_member_social authorizes posting as that member. Org posting is
 // unchanged - it uses the same token and the org scopes.
 const SCOPES = 'w_organization_social r_organization_social w_member_social openid profile';
+// Community Management API scopes: Page statistics (rw_organization_admin, follower stats),
+// reading and answering comments on the Page's own posts. LinkedIn refuses the WHOLE sign-in
+// when an app asks for a scope it does not hold, and most apps lack the CMA product, so these
+// are opt-in per brand: LINKEDIN_CMA=1 in that brand's .env (a flag, not a secret).
+const CMA_SCOPES = 'rw_organization_admin r_organization_followers r_organization_social_feed w_organization_social_feed';
+export const cmaEnabled = (get = readEnv) => /^(1|true|yes)$/i.test(String(get('LINKEDIN_CMA') || '').trim());
+// The CMA product must sit alone on its app, so such an app has no "Sign In with LinkedIn"
+// (openid, profile): asking for them refuses the sign-in (unauthorized_scope_error, seen
+// 2026-10-07). The person-URN capture is best-effort and simply stays empty there.
+const CMA_BASE_SCOPES = 'w_organization_social r_organization_social w_member_social';
+export const authScopes = (get = readEnv) => (cmaEnabled(get) ? `${CMA_BASE_SCOPES} ${CMA_SCOPES}` : SCOPES);
 const DEFAULT_PORT = 8089;
 const DEFAULT_ORG_URN = '';
 const DEFAULT_API_VERSION = '202605'; // YYYYMM; LinkedIn ships monthly, supported >= 1 year
@@ -136,6 +149,10 @@ function persistTokens(data) {
     LINKEDIN_TOKEN_EXPIRES_AT: String(Date.now() + (Number(data.expires_in) || 0) * 1000),
   };
   if (data.refresh_token) vars.LINKEDIN_REFRESH_TOKEN = data.refresh_token;
+  // The refresh token's own expiry (epoch ms), when LinkedIn returns it. The cloud reseal
+  // carries it (refreshExpiresAt) so the cloud knows when its copy stops working.
+  const refreshTtl = Number(data.refresh_token_expires_in);
+  if (Number.isFinite(refreshTtl) && refreshTtl > 0) vars.LINKEDIN_REFRESH_TOKEN_EXPIRES_AT = String(Date.now() + refreshTtl * 1000);
   writeEnv(vars);
   return vars;
 }
@@ -160,9 +177,15 @@ function tokenTail(t) {
   return t ? `...${t.slice(-6)} (length ${t.length})` : '(none)';
 }
 
-// Returns a valid access token, refreshing if it expires within 5 days. This IS the
-// "programmatic refresh". If the app was never granted refresh tokens, refresh_token is simply
-// absent and the 60-day re-auth is the documented fallback.
+// Refresh window: renew once the token has less than 14 days left. The cloud warns the
+// owner at 7 days, so a 5-day window meant the owner got a "reconnect" email for a token
+// pendpost could have renewed itself. 14 days also gives the daily scheduler refresh
+// (lib/writes.mjs dailyTokenRefresh) two weeks of retries before anyone has to act.
+export const LI_REFRESH_WINDOW_MS = 14 * 24 * 3600 * 1000;
+
+// Returns a valid access token, refreshing if it expires within LI_REFRESH_WINDOW_MS. This IS
+// the "programmatic refresh". If the app was never granted refresh tokens, refresh_token is
+// simply absent and the 60-day re-auth is the documented fallback.
 async function ensureFreshToken({ force = false } = {}) {
   const token = readEnv('LINKEDIN_ACCESS_TOKEN');
   const expiresAt = Number(readEnv('LINKEDIN_TOKEN_EXPIRES_AT') || 0);
@@ -170,8 +193,7 @@ async function ensureFreshToken({ force = false } = {}) {
     // throw (not process.exit) so main().catch can emit the --json failure envelope.
     throw new Error("No LINKEDIN_ACCESS_TOKEN - run 'node scripts/linkedin-social.mjs auth' first.");
   }
-  const fiveDays = 5 * 24 * 3600 * 1000;
-  if (!force && expiresAt - Date.now() > fiveDays) return token;
+  if (!force && expiresAt - Date.now() > LI_REFRESH_WINDOW_MS) return token;
 
   const refreshToken = readEnv('LINKEDIN_REFRESH_TOKEN');
   if (!refreshToken) {
@@ -190,6 +212,13 @@ async function ensureFreshToken({ force = false } = {}) {
       client_secret: requireEnv('LINKEDIN_CLIENT_SECRET'),
     });
   } catch (err) {
+    // A failed refresh must not abort a post whose token still works (the cloud runs this
+    // engine): warn and carry on with the current token. Only an explicit `refresh` (force)
+    // or a really expired token gives up, so the daily renew still records its failure.
+    if (!force && expiresAt > Date.now()) {
+      console.error(`[warn] Refresh failed (${err.message}); the current access token is still valid until ${new Date(expiresAt).toISOString()}, continuing with it. Re-run 'node scripts/linkedin-social.mjs auth' before then.`);
+      return token;
+    }
     console.error(`[err] Refresh failed (${err.message}). The refresh token is likely expired or revoked - re-run 'node scripts/linkedin-social.mjs auth'.`);
     process.exit(1);
   }
@@ -571,7 +600,7 @@ async function cmdAuth(args) {
     client_id: clientId,
     redirect_uri: redirectUri,
     state,
-    scope: SCOPES,
+    scope: authScopes(),
   }).toString()}`;
 
   console.log(`\n[action] Confirm ${redirectUri} is an Authorized redirect URL in the LinkedIn app (Auth tab), then approve the consent screen.`);
@@ -614,7 +643,7 @@ async function cmdAuth(args) {
         const exp = new Date(Number(vars.LINKEDIN_TOKEN_EXPIRES_AT)).toLocaleString('en-US');
         console.log(`\n[ok] Access token stored ${tokenTail(data.access_token)}, expires ${exp}.`);
         console.log(`[ok] Refresh token ${data.refresh_token ? 'stored - programmatic refresh enabled.' : 'NOT issued by the app - the 60-day token will need a manual re-auth on expiry.'}`);
-        console.log(`[ok] Scopes granted: ${data.scope || SCOPES}`);
+        console.log(`[ok] Scopes granted: ${data.scope || authScopes()}`);
         server.close();
         resolve();
       } catch (err) {
@@ -976,6 +1005,13 @@ async function cmdInsights(args) {
     const pathname = `/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(orgUrn())}&${param}=List(${encodeURIComponent(post.liPostId)})`;
     try {
       const { data } = await api('GET', pathname, { token });
+      // LinkedIn answers 200 with an EMPTY elements list for a post it has no numbers for (no
+      // activity yet): that is "nothing to count", not a failure. Record zeros, flagged noData.
+      if (Array.isArray(data.elements) && data.elements.length === 0) {
+        RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'insights', ok: true, id: post.liPostId, noData: true,
+          metrics: { impressions: 0, likes: 0, comments: 0, shares: 0, clicks: 0, reach: 0, engagement: 0 } });
+        continue;
+      }
       const s = data.elements?.[0]?.totalShareStatistics;
       if (!s) throw new Error('no totalShareStatistics in response');
       const metrics = {
@@ -992,11 +1028,30 @@ async function cmdInsights(args) {
       RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'insights', ok: true, id: post.liPostId, metrics });
       console.log(`[ok] ${post.id}: LI ${JSON.stringify(metrics)}`);
     } catch (err) {
-      RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+      // A 403 here is the org-statistics permission (LinkedIn's Community Management
+      // product) and a 401 is the token: neither changes from one post to the next, so
+      // the FIRST one ends the loop with one row for the lane instead of failing every
+      // post the same way (the nightly "110 fetch(es) failed").
+      const stop = liInsightsStopClass(err);
+      if (stop) {
+        RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'insights', ok: false, ...(stop === 'needs_scope' ? { error: 'needs_scope', scope: 'r_organization_social' } : { errorCode: 'engine_failure' }), errorMessage: describeFetchFailure(err).slice(0, 300) });
+        console.log(`[warn] ${post.id}: LI insights stopped (${stop}) - the remaining posts would fail the same way. ${err.message}`);
+        break;
+      }
+      RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) });
       console.log(`[warn] ${post.id}: LI insights failed - ${err.message}`);
     }
   }
   console.log(`[done] insights complete - ${RUN.results.filter((r) => r.ok).length} fetched.`);
+}
+
+// The failure classes that are the same for every post (permission, token): 'needs_scope'
+// for a 403, 'token' for a 401, else null (a per-post problem, keep going).
+export function liInsightsStopClass(err) {
+  const msg = String(err?.message || '');
+  if (/HTTP 403\b/.test(msg)) return 'needs_scope';
+  if (/HTTP 401\b/.test(msg)) return 'token';
+  return null;
 }
 
 // A follower-statistics urn (e.g. urn:li:seniority:9) has no human label without
@@ -1037,7 +1092,7 @@ async function cmdDemographics() {
   try {
     token = await ensureFreshToken();
   } catch (err) {
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) }));
     return;
   }
   try {
@@ -1047,12 +1102,20 @@ async function cmdDemographics() {
     RUN.results.push(accountRow({ ok: true, demographics: parseLiDemographics(el) }));
     console.log('[ok] demographics fetched.');
   } catch (err) {
+    // A 403 "Viewer has insufficient permissions to view statistics" is the MEMBER's Page role
+    // (follower statistics need the Page's super admin), not a missing app scope: a reconnect
+    // cannot fix it, so it gets its own reason instead of needs_scope.
+    if (/insufficient permissions to view statistics/i.test(String(err.message || ''))) {
+      RUN.results.push(accountRow({ ok: false, errorCode: 'needs_page_role', errorMessage: 'needs_page_role: the connected LinkedIn account is not a super admin of the Page' }));
+      console.log('[warn] demographics: the connected account lacks the Page role for follower statistics (super admin).');
+      return;
+    }
     if (/HTTP 403/.test(String(err.message || ''))) {
       RUN.results.push(accountRow({ ok: false, error: 'needs_scope', scope: 'rw_organization_admin' }));
       console.log('[warn] demographics: rw_organization_admin (Community Management API) not granted - no audience data available yet.');
       return;
     }
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) }));
     console.log(`[warn] demographics failed: ${err.message}`);
   }
 }
@@ -1217,6 +1280,8 @@ async function main() {
     process.exit(2);
   }
   await cmd(args);
+  // A hand-run ceremony hands the new sign-in to the running pendpost (recheck + cloud reseal).
+  await handOffAfterCeremony({ command: args._[0], lane: 'linkedin', results: RUN.results });
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
@@ -1225,7 +1290,12 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }
+
+// Test-only export: cmdInsights + RUN so the insights short-circuit test can drive the real
+// per-post loop in-process against a stubbed global.fetch (no network, no subprocess);
+// persistTokens + ensureFreshToken for the refresh-resilience test.
+export { cmdInsights, RUN, persistTokens, ensureFreshToken };

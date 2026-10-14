@@ -27,19 +27,19 @@ describe('ReceiptGlyph', () => {
     const glyph = container.querySelector('[aria-label]');
     expect(glyph).not.toBeNull();
     expect(glyph.getAttribute('aria-label')).toContain('abc123def4567890');
-    // No provenance overlay yet: default tone is 'ok' (the established
-    // inline-Tailwind idiom, not a bespoke unbacked class).
-    expect(glyph.querySelector('svg').getAttribute('class')).toContain('text-emerald-600');
+    // No provenance overlay yet: default tone is 'ok', the quiet grey STATUS_INK.ok (an
+    // all-clear gets no colour, canon Tier 2).
+    expect(glyph.querySelector('svg').getAttribute('class')).toContain('text-zinc-600');
   });
 
   it('reflects the verify_post provenance when present, with the matching tone color', () => {
     let c = wrap(<ReceiptGlyph receipt={receipt} provenance={{ signed: true, provenance: 'verified' }} />).container;
-    let glyph = c.querySelector('[aria-label="Signed - verified"]');
+    let glyph = c.querySelector('[aria-label="Signed (verified)"]');
     expect(glyph).not.toBeNull();
-    expect(glyph.querySelector('svg').getAttribute('class')).toContain('text-emerald-600');
+    expect(glyph.querySelector('svg').getAttribute('class')).toContain('text-zinc-600');
 
     c = wrap(<ReceiptGlyph receipt={receipt} provenance={{ signed: true, provenance: 'content-changed' }} />).container;
-    glyph = c.querySelector('[aria-label="Signed - content changed since"]');
+    glyph = c.querySelector('[aria-label="Signed (content changed since)"]');
     expect(glyph).not.toBeNull();
     expect(glyph.querySelector('svg').getAttribute('class')).toContain('text-amber-700');
 

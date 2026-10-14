@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Check, Pencil, Archive, ArchiveRestore, Loader2, X, Ban, CircleCheck, Clock, AlertTriangle, PauseCircle, Cloud as CloudIcon, Monitor } from 'lucide-react';
-import { useClients, useClientsOverview, createClient, updateClient, archiveClient, useSetActiveClient, uploadAssetFile } from '../lib/api.js';
+import { useClients, useClientsOverview, usePlansAll, createClient, updateClient, archiveClient, useSetActiveClient, uploadAssetFile } from '../lib/api.js';
 import { useCloud, useCloudClients, setClientAlwaysOn } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
+import { attentionSummary } from '../lib/format.js';
 import { validateAccent, DEFAULT_ACCENT, clientAccent } from '../lib/theme.js';
 import { INNER_SURFACE, EYEBROW, Skeleton } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
@@ -11,12 +12,32 @@ import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 import Input from './ui/Input.jsx';
 import { ReviewSection } from './ReviewLink.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction } from '../lib/failureCopy.js';
+
+// A failed action's alert, the Setup anatomy: the plain sentence ({ text, raw } from
+// humanizeAction with the surface's own fallback key) is the alert, and the raw server line
+// rides the house "?" beside it, never inline and never inside the alert. `box` is the
+// surface's own frame (a banner or a bare field line).
+function ActionError({ error, box = '', className = 'text-[11px] font-bold text-red-600 dark:text-red-300' }) {
+  if (!error) return null;
+  return (
+    <div className={`flex items-start gap-1 ${box}`}>
+      <p role="alert" className={className}>{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
+const actionAlert = (err, t, fallbackKey) => humanizeAction(err, t, { fallbackKey });
+const BANNER = { box: 'rounded-xl bg-red-500/10 p-3', className: 'text-xs text-red-600 dark:text-red-300' };
 
 const BTN = 'rounded-xl px-3 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 const BTN_BRAND = `${BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`;
 const BTN_GHOST = `${BTN} text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60`;
 
-const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+// One overview cell: a table cell from md up, a block in the stacked phone row below md.
+const CELL = 'px-3 py-2 max-md:block max-md:py-0.5';
+const SLUG_RE =/^[a-z0-9][a-z0-9-]*$/;
 // logo is the {path,url} object ClientAvatar renders (logo.url || /media/<path>),
 // or null for a monogram. NOT the old { file } string shape (which never rendered).
 const EMPTY = { id: '', displayName: '', accent: DEFAULT_ACCENT, timezone: '', logo: null };
@@ -59,7 +80,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
     setLogoError(null);
     if (!file) return;
     if (!LOGO_EXT_RE.test(file.name)) {
-      setLogoError(t('clientForm.error.logoNotImage'));
+      setLogoError({ text: t('clientForm.error.logoNotImage'), raw: null });
       return;
     }
     setLogoUploading(true);
@@ -68,7 +89,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
       const rel = res.file;
       setField('logo', { path: rel, url: `/media/${rel}` });
     } catch (err) {
-      setLogoError(err.message || t('clientForm.error.logoUploadFailed'));
+      setLogoError(actionAlert(err, t, 'clientForm.error.logoUploadFailed'));
     } finally {
       setLogoUploading(false);
     }
@@ -118,7 +139,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       onSaved();
     } catch (err) {
-      setBanner(err.message || t('clientForm.error.saveFailed'));
+      setBanner(actionAlert(err, t, 'clientForm.error.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -235,14 +256,14 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
             ) : null}
           </div>
           {logoError ? (
-            <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{logoError}</p>
+            <ActionError error={logoError} />
           ) : (
             <p id="logo-hint" className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('clientForm.hint.logo')}</p>
           )}
         </div>
       </div>
 
-      {banner ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{banner}</p> : null}
+      <ActionError error={banner} {...BANNER} />
 
       <div className="flex items-center gap-2">
         <button type="submit" disabled={saving || logoUploading} aria-busy={saving} className={BTN_BRAND}>
@@ -261,7 +282,10 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
 // per-client scheduler state, and the Meta-368 breaker - all via NON-COLOR signals
 // (text label + count + icon, never color alone). Falls back to the registry's
 // basic block signal when the richer overview roll-up is absent for an id.
-function ClientHealthCell({ row, blocked, t }) {
+// The late-post signal is `attention` (attentionSummary over the project's own plans), the
+// SAME slot and words as the sidebar: "Wartet auf dich: n" or "Überfällig: n", a post
+// pendpost is retrying left out. It stays absent until that project's plans have loaded.
+function ClientHealthCell({ row, blocked, attention, t }) {
   if (!row) {
     return blocked ? (
       <span className="inline-flex items-center gap-1.5 font-bold text-zinc-700 dark:text-zinc-200" title={t('clients.health.blockedTitle')}>
@@ -286,10 +310,10 @@ function ClientHealthCell({ row, blocked, t }) {
         <Clock size={13} aria-hidden="true" />
         {t('clientsOverview.signal.pending', { count: row.pending })}
       </span>
-      {row.overdue > 0 ? (
+      {attention ? (
         <span className="inline-flex items-center gap-1.5 font-bold text-zinc-800 dark:text-zinc-100">
           <AlertTriangle size={13} aria-hidden="true" />
-          {t('clientsOverview.signal.overdue', { count: row.overdue })}
+          {t(attention.kind === 'needs-you' ? 'sidebar.needsYou' : 'sidebar.overdue', { count: attention.count })}
         </span>
       ) : null}
       {!row.schedulerRunning ? (
@@ -352,6 +376,15 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
     () => Object.fromEntries((overviewData?.clients || []).map((c) => [c.id, c])),
     [overviewData],
   );
+  // Each live project's plans (the same ['plans', id] reads the all-projects view shares), so
+  // its late-post signal counts with the sidebar's one predicate over the same posts: internal
+  // campaigns out, a retrying post out, "Wartet auf dich" before "Überfällig".
+  const liveClients = useMemo(() => clients.filter((c) => c.status !== 'archived'), [clients]);
+  const plansQueries = usePlansAll(liveClients, true);
+  const attentionById = Object.fromEntries(liveClients.map((c, i) => {
+    const campaigns = plansQueries[i]?.data?.campaigns;
+    return [c.id, campaigns ? attentionSummary(campaigns.filter((k) => !k.internal).flatMap((k) => k.posts || [])) : null];
+  }));
 
   const makeActive = async (c) => {
     setBusyId(c.id);
@@ -421,13 +454,13 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
           queryClient.invalidateQueries({ queryKey: ['clients'] });
           queryClient.invalidateQueries({ queryKey: ['cloud'] });
         } catch (err2) {
-          setActionError(err2.message || t('clients.action.error'));
+          setActionError(actionAlert(err2, t, 'clients.action.error'));
         } finally {
           setBusyId(null);
         }
         return;
       }
-      setActionError(err.message || t('clients.action.error'));
+      setActionError(actionAlert(err, t, 'clients.action.error'));
     } finally {
       setBusyId(null);
     }
@@ -436,14 +469,13 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
   return (
     <div className="space-y-5">
       <p role="status" aria-live="polite" className="sr-only">{announce}</p>
-      {actionError ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{actionError}</p> : null}
+      <ActionError error={actionError} {...BANNER} />
+      {/* The page title ("Projekte") is the app chrome's own <h1> (App.jsx pageTitle), so the
+          page does not repeat it; one quiet line says what a project is. */}
       <header className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="font-display text-lg font-bold">{t('clients.title')}</h2>
-          <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-            {t('clients.subtitle')}
-          </p>
-        </div>
+        <p className="min-w-0 flex-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+          {t('clients.subtitle')}
+        </p>
         {!form ? (
           <button type="button" onClick={() => setForm({ mode: 'create' })} className={`flex items-center gap-1.5 ${BTN_BRAND}`}>
             <Plus size={15} aria-hidden="true" />
@@ -467,11 +499,16 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
           {[0, 1, 2].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
         </div>
       ) : isError || data?.error ? (
-        <div role="alert" className="rounded-2xl bg-red-500/10 p-4 text-sm font-bold text-red-700 ring-1 ring-red-500/30 dark:text-red-300">
-          {t('clients.registryUnreadable')}
-          <span className="mt-1 block text-xs font-medium text-red-700/80 dark:text-red-300/80">
-            {data?.error?.message || error?.message || t('clients.registryFallback')}
-          </span>
+        // The registry's own parse or read error (English, often a JSON parser line) rides
+        // the "?" beside the plain cause, never inline and never inside the alert.
+        <div className="flex items-start gap-1 rounded-2xl bg-red-500/10 p-4 ring-1 ring-red-500/30">
+          <div role="alert" className="text-sm font-bold text-red-700 dark:text-red-300">
+            {t('clients.registryUnreadable')}
+            <span className="mt-1 block text-xs font-medium text-red-700/80 dark:text-red-300/80">
+              {t('clients.registryFallback')}
+            </span>
+          </div>
+          <InfoTip label={data?.error?.message || error?.message || null} />
         </div>
       ) : clients.length === 0 ? (
         <div className="grid place-items-center rounded-2xl p-8 text-center">
@@ -483,20 +520,24 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
           </button>
         </div>
       ) : (
+        // Below md each project is a stacked row (the same table and cells, re-laid by CSS, so
+        // there is no second markup to drift): name + actions on top, status under it, health
+        // last. At 375px the columns needed 601px of a 309px box and the table scrolled
+        // sideways. The headers stay for assistive tech; md+ is the plain table. D13: no
+        // Timezone column; the timezone lives in the edit form only.
         <div className={`overflow-hidden rounded-2xl ${INNER_SURFACE}`}>
-          <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+          <div className="md:overflow-x-auto">
+          <table className="w-full text-left text-sm max-md:block">
             <caption className="sr-only">{t('clients.tableCaption')}</caption>
-            <thead>
+            <thead className="max-md:sr-only">
               <tr className="border-b border-zinc-200/70 text-[11px] tracking-tight text-zinc-500 dark:border-zinc-700/70 dark:text-zinc-400">
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.client')}</th>
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.status')}</th>
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.health')}</th>
-                <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.timezone')}</th>
                 <th scope="col" className="px-3 py-2 text-right font-bold">{t('clients.col.actions')}</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="max-md:block">
               {sortedClients.map((c) => {
                 const isActive = c.id === activeId;
                 const archived = c.status === 'archived';
@@ -506,24 +547,25 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
                 const muted = archived ? 'opacity-60' : '';
                 const sep = c.id === firstArchivedId ? 'border-t-2 border-zinc-200 dark:border-zinc-700' : '';
                 return (
-                  <tr key={c.id} aria-current={isActive ? 'true' : undefined} className={`border-b border-zinc-200/50 last:border-0 dark:border-zinc-700/50 ${sep}`}>
-                    <td className={`px-3 py-2 ${muted}`}>
+                  <tr key={c.id} aria-current={isActive ? 'true' : undefined} className={`border-b border-zinc-200/50 last:border-0 dark:border-zinc-700/50 max-md:grid max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-center max-md:gap-x-2 max-md:py-1.5 ${sep}`}>
+                    <td className={`${CELL} max-md:col-start-1 max-md:row-start-1 ${muted}`}>
                       <span className="flex items-center gap-2">
                         <ClientAvatar client={c} size={24} />
                         <span className="min-w-0">
-                          <span className="flex items-center gap-1.5">
-                            <span className="font-bold">{c.displayName}</span>
+                          <span className="flex flex-wrap items-center gap-x-1.5">
+                            {/* The name is the identity; the raw id is a hover away for the
+                                operator who needs it, never a monospace line of its own. */}
+                            <span className="font-bold" title={c.id}>{c.displayName}</span>
                             {isActive ? (
                               <span className="inline-flex items-center gap-1 rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-bold text-brand dark:text-brand-light">
                                 <Check size={11} aria-hidden="true" /> {t('clients.selected')}
                               </span>
                             ) : null}
                           </span>
-                          <span className="block font-mono text-[10px] text-zinc-500 dark:text-zinc-400">{c.id}</span>
                         </span>
                       </span>
                     </td>
-                    <td className={`px-3 py-2 text-xs ${muted}`}>
+                    <td className={`${CELL} text-xs max-md:col-start-1 ${muted}`}>
                       <span className="flex items-center gap-2">
                         <span>{archived ? t('clients.status.archived') : t('clients.status.active')}</span>
                         {cloudConnected && !archived ? (
@@ -543,11 +585,10 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
                         ) : null}
                       </span>
                     </td>
-                    <td className={`px-3 py-2 text-xs ${muted}`}>
-                      {archived ? null : <ClientHealthCell row={overviewById[c.id]} blocked={c.actionBlocked} t={t} />}
+                    <td className={`${CELL} text-xs max-md:col-span-2 ${archived ? 'max-md:hidden' : ''} ${muted}`}>
+                      {archived ? null : <ClientHealthCell row={overviewById[c.id]} blocked={c.actionBlocked} attention={attentionById[c.id]} t={t} />}
                     </td>
-                    <td className={`px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400 ${muted}`}>{c.timezone || '-'}</td>
-                    <td className="px-3 py-2">
+                    <td className={`${CELL} max-md:col-start-2 max-md:row-start-1`}>
                       <span className="flex items-center justify-end gap-1">
                         {!isActive && !archived ? (
                           <button type="button" onClick={() => makeActive(c)} disabled={busy} aria-label={t('clients.action.makeActive', { name: c.displayName })} className="rounded-lg px-2 py-1 text-xs font-bold text-brand transition hover:bg-brand/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:text-brand-light">

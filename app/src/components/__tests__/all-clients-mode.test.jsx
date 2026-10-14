@@ -178,6 +178,25 @@ describe('all-clients mode (issue 6)', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refetchAcme).toHaveBeenCalledTimes(1);
   });
+
+  // 2026-09-29: a failed reel in a project the operator was not viewing never lit the chip,
+  // so opening the app showed nothing to act on. The chip reads every project's late posts
+  // even with the mode off, and its click opens the all-projects scope so the list is not empty.
+  it('with the mode off, a failed post in another project lights the chip, and the click opens all projects', async () => {
+    window.localStorage.setItem('pendpost.allClients', '0');
+    plansAll.results[1] = {
+      data: { campaigns: [{ id: 'c-globex', active: true, posts: [basePost({ id: 'g2', title: 'Globex failed reel', approval: 'approved', derivedState: 'publish-failed', lastFailure: { recovery: 'reconnect', terminal: true } })] }] },
+      isLoading: false, isError: false, error: null, refetch: vi.fn(),
+    };
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    renderApp();
+    // The viewed project (Acme, via the empty usePlans mock) has nothing late; the chip still counts Globex.
+    const chip = screen.getByRole('button', { name: 'Waiting on you: 1. Open the list' });
+    await user.click(chip);
+    expect(window.localStorage.getItem('pendpost.allClients')).toBe('1');
+    expect(await screen.findByText('Globex failed reel')).toBeInTheDocument();
+  });
 });
 
 // Node A — Activity all-projects. App fans useActivityAll out per client, merges

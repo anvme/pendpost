@@ -15,11 +15,14 @@ import { UserPlus, Copy, Check, Ban, Clock, ShieldCheck, Loader2, Send, Info } f
 import { useReviewers, createReviewer, revokeReviewer, useConfig, saveConfig } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { INNER_SURFACE, EYEBROW } from './ui.jsx';
+import { PILL_TONES } from './ui/recipes.js';
 import { Modal, CloseButton } from './ui.jsx';
 import { ToggleRow } from './ui/Switch.jsx';
 import { Select } from './ui/Select.jsx';
 import Input from './ui/Input.jsx';
 import { useConfirm } from './ui/confirm.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction } from '../lib/failureCopy.js';
 
 const BTN = 'rounded-xl px-3 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60';
 const BTN_BRAND = `${BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`;
@@ -29,6 +32,21 @@ const BTN_GHOST = `${BTN} text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 
 // object under config.posting so it rides the SAME config_set path every other
 // posting key uses (no bespoke store).
 const DEFAULT_REVIEW = { required: false, hosted: false, contact: null };
+
+// An action error is { text, raw }: `text` is one plain sentence (the caller's own fallback
+// unless humanizeAction knows better), `raw` the server's line, shown only behind the "?".
+// A sentence this module writes itself (a duplicate name, hosted not available) has no raw.
+const actionAlert = (err, t, fallbackKey) => humanizeAction(err, t, { fallbackKey });
+const plainAlert = (text) => ({ text, raw: null });
+function ActionError({ error, className = '' }) {
+  if (!error) return null;
+  return (
+    <div className={`flex items-start gap-1 ${className}`}>
+      <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
 function readReview(configData) {
   const r = configData?.posting?.review;
   return { ...DEFAULT_REVIEW, ...(r && typeof r === 'object' ? r : {}) };
@@ -93,7 +111,7 @@ export default function InviteReviewerDialog({ clientId, clientName, hasContact 
     ev.preventDefault();
     setError(null);
     if (!name.trim()) {
-      setError(t('review.invite.error.nameRequired'));
+      setError(plainAlert(t('review.invite.error.nameRequired')));
       return;
     }
     setBusy(true);
@@ -106,7 +124,7 @@ export default function InviteReviewerDialog({ clientId, clientName, hasContact 
       // Duplicate name is the common case: keep every typed value, name the reason
       // inline, leave Create enabled so renaming-in-place is the recovery (matrix row 2).
       const dup = err.code === 'duplicate' || err.error === 'duplicate_name';
-      setError(dup ? t('review.invite.error.duplicate', { client: clientName }) : (err.message || t('review.invite.error.generic')));
+      setError(dup ? plainAlert(t('review.invite.error.duplicate', { client: clientName })) : actionAlert(err, t, 'review.invite.error.generic'));
     } finally {
       setBusy(false);
     }
@@ -156,9 +174,11 @@ export default function InviteReviewerDialog({ clientId, clientName, hasContact 
             label={t('review.invite.nameLabel')}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            error={error}
+            error={error?.text}
             autoFocus
           />
+          {/* The raw server line of a failed create, behind the "?" only. */}
+          <InfoTip label={error?.raw && error.raw !== error.text ? error.raw : null} />
           {/* Expiry is an OPTIONAL advanced field defaulting to no expiry (O3):
               revoke is the kill path; expiry is a belt-and-braces opt-in. */}
           <label className="block space-y-1">
@@ -211,7 +231,7 @@ function ReviewerRow({ clientId, reviewer, onInviteAgain }) {
       await revokeReviewer(clientId, reviewer.id);
       queryClient.invalidateQueries({ queryKey: ['reviewers', clientId] });
     } catch (err) {
-      setError(err.message || t('review.revoke.error'));
+      setError(actionAlert(err, t, 'review.revoke.error'));
     } finally {
       setBusy(false);
     }
@@ -245,7 +265,7 @@ function ReviewerRow({ clientId, reviewer, onInviteAgain }) {
           {t('review.list.inviteAgain')}
         </button>
       ) : null}
-      {error ? <p role="alert" className="basis-full text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} className="basis-full" />
     </li>
   );
 }
@@ -289,7 +309,7 @@ export function ReviewSection({ clientId, clientName }) {
     try {
       await writeReview({ required: nextVal });
     } catch (err) {
-      setToggleError(err.message || t('review.toggle.error'));
+      setToggleError(actionAlert(err, t, 'review.toggle.error'));
     } finally {
       setBusyKey(null);
     }
@@ -304,7 +324,7 @@ export function ReviewSection({ clientId, clientName }) {
       await writeReview({ hosted: nextVal });
     } catch (err) {
       const unavailable = err.code === 'review_hosted_unavailable' || err.error === 'review_hosted_unavailable';
-      setToggleError(unavailable ? t('review.hosted.unavailable') : (err.message || t('review.toggle.error')));
+      setToggleError(unavailable ? plainAlert(t('review.hosted.unavailable')) : actionAlert(err, t, 'review.toggle.error'));
     } finally {
       setBusyKey(null);
     }
@@ -317,7 +337,7 @@ export function ReviewSection({ clientId, clientName }) {
       await writeReview({ contact: contactDraft.trim() || null });
       setContactDraft(null);
     } catch (err) {
-      setToggleError(err.message || t('review.toggle.error'));
+      setToggleError(actionAlert(err, t, 'review.toggle.error'));
     } finally {
       setContactSaving(false);
     }
@@ -367,7 +387,7 @@ export function ReviewSection({ clientId, clientName }) {
           onChange={onToggleHosted}
           disabled={busyKey === 'hosted'}
         />
-        {toggleError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{toggleError}</p> : null}
+        <ActionError error={toggleError} />
       </div>
 
       {/* Optional contact (O4): powers the reviewer page's dead-link mailto. Gentle,
@@ -430,7 +450,7 @@ export function ReviewStatusChip({ post }) {
   if (signedByReviewer && post.approval === 'approved') {
     const name = reviewerName(post.approvalBy);
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300">
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${PILL_TONES.ok}`}>
         <ShieldCheck size={11} className="shrink-0" aria-hidden="true" />
         <span className="truncate">{name ? t('review.chip.signedNamed', { name }) : t('review.chip.signed')}</span>
       </span>

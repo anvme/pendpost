@@ -82,6 +82,17 @@ describe('Finding 6: month "+N more" reveals the day', () => {
     fireEvent.click(screen.getByRole('button', { name: /more posts/i }));
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
+
+  // Tail2 U5 (phase 3): "+n more" measured about 16px tall. It gets the Month chips' own
+  // decision: at least 24px on a fine pointer (WCAG 2.5.8 AA), 44px on a coarse one (touch).
+  // Nothing else about it changes.
+  it('is at least 24px on a fine pointer and 44px on a coarse pointer', () => {
+    wrap(<MonthView posts={fivePosts} monthAnchor={anchor} onSelect={() => {}} loading={false} lane={{}} />);
+    const tokens = screen.getByRole('button', { name: /more posts/i }).className.split(/\s+/);
+    expect(tokens).toContain('min-h-6');
+    expect(tokens).toContain('[@media(pointer:coarse)]:min-h-11');
+    expect(tokens).toEqual(expect.arrayContaining(['w-full', 'px-1', 'py-0.5', 'text-left', 'text-[10px]']));
+  });
 });
 
 describe('Finding 8: List row park via the ⋯ menu', () => {

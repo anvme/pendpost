@@ -90,6 +90,13 @@ try {
   ok(JSON.stringify([...webSig.intentTags].sort()) === JSON.stringify([...expected.intentTags].sort()), 'the ingested intentTags equal scoreInto with the resolved query');
   ok(webSig.suggestedAction === expected.suggestedAction, 'the ingested suggestedAction equals scoreInto with the resolved query');
   ok(webSig.matchedQuery === 'q1', 'the ingested signal is stamped matchedQuery = the resolved query id');
+  // Attribution must be truthful (2026-09-25): the model may echo its own label for the search
+  // ("scheduling", "self-host-social") in signal.matchedQuery. The query the call RESOLVED wins,
+  // so the Studio's "see the query behind this signal" opens the real saved query, not an orphan.
+  const labelled = { ...rawWeb, url: 'https://example.com/labelled', text: 'Which tool do you use to schedule posts?', matchedQuery: 'scheduling' };
+  await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [labelled] });
+  const labelledSig = (await listRadar({})).items.find((s) => s.url === 'https://example.com/labelled');
+  ok(labelledSig && labelledSig.matchedQuery === 'q1', `a model-supplied matchedQuery never overrides the resolved query id (got ${labelledSig && labelledSig.matchedQuery})`);
 
   // ---- (f) radar_ingest scores/dedupes IDENTICALLY to runRadarScan ----------
   // Scan the mock reddit lane so the feed holds engine-scored reddit signals, then re-ingest
@@ -107,7 +114,13 @@ try {
   const feedAfter = await listRadar({});
   ok(feedAfter.items.length === feedLenBefore, 're-ingest does NOT double the feed (deduped by source+externalId)');
   const reSig = feedAfter.items.find((s) => signalKey(s) === signalKey(scanned));
-  ok(reSig && reSig.intentScore === scanned.intentScore, `the re-ingested signal keeps the SAME score as runRadarScan produced (${reSig.intentScore}) - radar_ingest and the engine path are indistinguishable downstream`);
+  // Relevance plan 2026-09-30: this workspace has no agent provider, so the ENGINE copy is
+  // unjudged and capped below the medium tier (fail-closed). The SCORER is still the same one:
+  // the re-ingested copy scores exactly what scoreInto gives the same text under the same query,
+  // and best-score-wins lets that agent-submitted copy replace the capped one.
+  const regex = scoreInto(normalizeSignal(bareRaw, bareRaw.source), QUERY, { competitorsDefault: COMPETITORS_DEFAULT });
+  ok(scanned.unjudged === true && scanned.intentScore <= Math.min(25, regex.intentScore), `the engine copy is unjudged and capped at 25 (${scanned.intentScore})`);
+  ok(reSig && reSig.intentScore === regex.intentScore && reSig.ingested === true, `the re-ingested signal scores exactly what the shared scorer gives it (${reSig && reSig.intentScore} === ${regex.intentScore}) - one scorer, one dedupe key`);
 
   // ---- (g) a non-https url is REJECTED (XSS via href + reply-prompt interpolation) ----
   const badUrl = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [

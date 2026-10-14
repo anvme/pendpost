@@ -169,7 +169,7 @@ export function AssetCard({ asset, onAttach, onDelete, onRename, selectedIndex =
         </p>
         {used ? (
           <Tip label={asset.usedBy.map((u) => `${u.postId} · ${prettyCampaign(u.campaign)}${u.scheduledAt ? ` · ${fmtFull(u.scheduledAt)}` : ''}`).join(' / ')}>
-            <button type="button" className="text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
+            <button type="button" className="text-[10px] font-bold text-zinc-600 dark:text-zinc-300">
               {t('assets.card.usedIn', { count: asset.usedBy.length })}
             </button>
           </Tip>
@@ -241,7 +241,7 @@ export function AssetRow({ asset, onAttach, onDelete, onRename, selectedIndex = 
           ) : null}
           {used ? (
             <Tip label={asset.usedBy.map((u) => `${u.postId} · ${prettyCampaign(u.campaign)}${u.scheduledAt ? ` · ${fmtFull(u.scheduledAt)}` : ''}`).join(' / ')}>
-              <button type="button" className="text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
+              <button type="button" className="text-[10px] font-bold text-zinc-600 dark:text-zinc-300">
                 {t('assets.card.usedIn', { count: asset.usedBy.length })}
               </button>
             </Tip>
@@ -636,7 +636,8 @@ export default function Assets({ onAttach }) {
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+      {/* Grows with the library; the app's one scroller (<main>) moves it (shell rule). */}
+      <div className="flex-1">
         {isLoading ? (
           view === 'list' ? (
             <ul role="list" className="space-y-2">

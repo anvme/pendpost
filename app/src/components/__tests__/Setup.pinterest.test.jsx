@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -16,6 +16,7 @@ let accountsState;
 vi.mock('../../lib/api.js', () => ({
   // WP6: Setup reads the radar capability table for the per-card scan switch
   useSignals: () => ({ data: undefined, isLoading: false }),
+  usePlans: () => ({ data: undefined }),
   usePendpostHealth: () => ({
     data: {
       ok: true, ready: false,
@@ -101,7 +102,7 @@ describe('Setup — Pinterest video-scope reconnect affordance (spec 17)', () =>
   it('always shows the board-section capability note once connected', async () => {
     renderSetup();
     await expandPinterestCard();
-    expect(screen.getByText('Pins can target a specific board section - pick one in the composer.')).toBeInTheDocument();
+    expect(screen.getByText('Pins can target a specific board section. Pick one in the composer.')).toBeInTheDocument();
   });
 
   it('shows the reconnect affordance when the stored scope lacks media:write (a pre-spec-17 token)', async () => {
@@ -120,6 +121,23 @@ describe('Setup — Pinterest video-scope reconnect affordance (spec 17)', () =>
     renderSetup();
     await expandPinterestCard();
     expect(screen.getByText(/Native video pins need a new authorization/)).toBeInTheDocument();
+  });
+
+  // The affordance's button asks to reconnect, so its confirm does too (never "Disconnect
+  // Pinterest?"); confirming runs the disconnect, after which the card offers the connect.
+  it('the reconnect affordance opens a reconnect confirm, not the disconnect one', async () => {
+    accountsState = { pinterest: { authenticated: true, boardId: 'board1', scope: 'boards:read pins:read pins:write' } };
+    renderSetup();
+    await expandPinterestCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Reconnect Pinterest' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Reconnect Pinterest?')).toBeInTheDocument();
+    expect(dialog.getByText('pendpost removes the current connection, and you connect Pinterest again in the next step.')).toBeInTheDocument();
+    expect(dialog.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+    await user.click(dialog.getByRole('button', { name: 'Reconnect' }));
+    const api = await import('../../lib/api.js');
+    await waitFor(() => expect(api.disconnectPlatform).toHaveBeenCalledWith('pinterest'));
   });
 
   it('hides the reconnect affordance once the connected token carries media:write (space-separated, the real wire format)', async () => {

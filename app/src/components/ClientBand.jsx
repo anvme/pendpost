@@ -1,6 +1,5 @@
 import { useT } from '../lib/i18n.js';
 import { clientAccent, parseHex, bestContrastOn, DEFAULT_ACCENT } from '../lib/theme.js';
-import { EYEBROW } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
 
 // B4 — always-on per-client signage. A small, READ-ONLY band that names the
@@ -15,8 +14,7 @@ import { ClientAvatar } from './ClientSwitcher.jsx';
 //
 // Text on the accent uses the contrast-safe foreground (bestContrastOn), so a
 // low-luminance accent still passes AA / jest-axe (anti-slop: single color,
-// font-bold max, no all-caps prose; the eyebrow micro-label is a tiny
-// sentence-case label, matching the sidebar switcher sublabel).
+// font-bold max, no all-caps prose).
 export default function ClientBand({ client, className = '' }) {
   const t = useT();
 
@@ -29,9 +27,6 @@ export default function ClientBand({ client, className = '' }) {
         aria-label={t('clientBand.noClient')}
         className={`inline-flex h-8 shrink-0 items-center gap-2 rounded-xl bg-zinc-200/60 px-2.5 dark:bg-zinc-800/60 ${className}`}
       >
-        <span aria-hidden="true" className={EYEBROW}>
-          {t('clientBand.label')}
-        </span>
         <span aria-hidden="true" className="text-sm font-bold text-zinc-500 dark:text-zinc-400">{t('clientBand.noClient')}</span>
       </span>
     );
@@ -48,12 +43,10 @@ export default function ClientBand({ client, className = '' }) {
       style={{ backgroundColor: accent, color: fg }}
     >
       <ClientAvatar client={client} size={20} />
-      <span aria-hidden="true" className="flex items-center gap-1.5 leading-none">
-        {/* The "active client" micro-label drops below lg so the header stays on
-            one line on narrow widths; the avatar + name still identify the client. */}
-        <span className="hidden text-[11px] font-bold tracking-tight lg:inline">{t('clientBand.label')}</span>
-        <span className="max-w-[14ch] truncate text-sm font-bold" title={client.displayName}>{client.displayName}</span>
-      </span>
+      {/* Phase 3 D13: no "Aktives Projekt" micro-label. The tinted band with the avatar
+          and name IS the signage (the label already hid below lg with nothing lost);
+          the group's aria-label keeps the full sentence for a screen reader. */}
+      <span aria-hidden="true" className="max-w-[14ch] truncate text-sm font-bold leading-none" title={client.displayName}>{client.displayName}</span>
     </span>
   );
 }

@@ -1,6 +1,7 @@
-import { useId } from 'react';
+import { isValidElement, useId } from 'react';
 import { Check, Loader2 } from 'lucide-react';
 import { FIELD_SURFACE } from './tokens.js';
+import InfoTip from './InfoTip.jsx';
 
 // The ONE link-capture row: paste the live post's URL, save the marker. Three
 // surfaces close the same loop (Radar's copy path, the answered-without-proof
@@ -18,6 +19,9 @@ import { FIELD_SURFACE } from './tokens.js';
 // link optional (the copy path), vs attaching a link where the mark already
 // exists or must carry proof (the repair + the card).
 const QUIET_BTN = 'inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5';
+
+// A { text, raw } alert object (humanizeAction), as opposed to a string or a React node.
+const isAlertShape = (e) => Boolean(e && typeof e === 'object' && !isValidElement(e) && typeof e.text === 'string');
 
 export default function LinkCaptureRow({ value, onChange, onSave, saving = false, error = null, placeholder, label, inputLabel = null, requireValue = false }) {
   const inputId = useId();
@@ -44,7 +48,15 @@ export default function LinkCaptureRow({ value, onChange, onSave, saving = false
         {saving ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
         {label}
       </button>
-      {error ? <span className="text-[11px] text-red-600 dark:text-red-400">{error}</span> : null}
+      {/* The error is announced the moment it appears (role="alert"). A { text, raw } alert
+          (humanizeAction) keeps the raw server line OUT of the announced text: it rides the
+          house "?" beside the sentence. A string or node renders as-is. */}
+      {isAlertShape(error) ? (
+        <span className="inline-flex items-center gap-1">
+          <span role="alert" className="text-[11px] text-red-600 dark:text-red-400">{error.text}</span>
+          <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+        </span>
+      ) : error ? <span role="alert" className="text-[11px] text-red-600 dark:text-red-400">{error}</span> : null}
     </span>
   );
 }

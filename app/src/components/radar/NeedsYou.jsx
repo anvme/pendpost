@@ -20,11 +20,12 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Check, Copy, Loader2, RefreshCw, Send, SkipForward, Pencil, ExternalLink, Radio } from 'lucide-react';
-import { useEngageAsks, useActiveClient, engageAnswer, engageConfirmAsk, engageDismiss, engageProbe, radarMarkCopyPosted, errText } from '../../lib/api.js';
+import { useEngageAsks, useActiveClient, engageAnswer, engageConfirmAsk, engageDismiss, engageProbe, radarMarkCopyPosted, errReason } from '../../lib/api.js';
 import { INNER_SURFACE, Skeleton } from '../ui.jsx';
 import { BTN_PRIMARY, BTN_QUIET, PILL_BASE, PILL_TONES, TAP_TARGET } from '../ui/recipes.js';
 import { FIELD, FIELD_MULTILINE } from '../ui/tokens.js';
 import { Tip } from '../ui/Tooltip.jsx';
+import InfoTip from '../ui/InfoTip.jsx';
 import { SOURCE_META, RowMenu, sourceLabel } from './RadarFeed.jsx';
 
 // Collapsed height of the strip, in rows (row 8e3: never more than five without asking).
@@ -107,7 +108,7 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
     } catch (err) {
       // The typed text is NOT cleared: it lives in this component's state and the row stays
       // mounted, so Retry means "send the same words again", not "type it all again".
-      setError(t(errorKey, { reason: errText(err, t, 'radar.error.save'), platform }));
+      setError(errReason(err, t, errorKey, { platform }));
       setBusy(false);
     }
   };
@@ -163,9 +164,11 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
           queryClient.invalidateQueries({ queryKey: ['engage-asks'] });
           queryClient.invalidateQueries({ queryKey: ['engage'] });
           if (res && res.usable) onResolved(ask, sentLine());
-          else { setError(t('radar.ask.error.check', { platform })); setBusy(false); }
+          else { setError({ text: t('radar.ask.error.check', { platform }), raw: null }); setBusy(false); }
         } catch (err) {
-          setError(t('radar.ask.error.send', { reason: errText(err, t, 'radar.error.save'), platform }));
+          // The check itself failed (pendpost unreachable, a server error): say the check
+          // failed, never "Could not send" - nothing was being sent.
+          setError(errReason(err, t, 'radar.ask.error.probe', { platform }));
           setBusy(false);
         }
       },
@@ -253,11 +256,13 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
             </label>
           ) : null}
 
+          {/* One plain sentence; the server's raw line rides the shared "?" only, never inline. */}
           {error ? (
-            <p role="alert" className="flex flex-wrap items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
-              <span>{error}</span>
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+              <p role="alert">{error.text}</p>
+              <InfoTip label={error.raw} />
               <button type="button" onClick={primary.onClick} className={`font-bold underline underline-offset-2 ${TAP_TARGET}`}>{t('radar.ask.error.retry')}</button>
-            </p>
+            </div>
           ) : null}
         </div>
         {/* The overflow sits to the LEFT of the primary (S4), so the one thing this row is for

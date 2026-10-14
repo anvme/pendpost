@@ -30,7 +30,7 @@ import { bootScheduler } from './lib/scheduler.mjs';
 import { bootCoverBackfill, bootScheduleBackfill } from './lib/writes.mjs';
 import { bootApprovalNotifier } from './lib/notify.mjs';
 import { bootReviewServer } from './lib/review-server.mjs';
-import { healConnection } from './lib/cloud-client.mjs';
+import { healConnection, resealChangedBrands } from './lib/cloud-client.mjs';
 import { startHealthSchedule } from './lib/health.mjs';
 import { authGateEnabled, checkAuth } from './lib/flags.mjs';
 import { assertMockRootAllowed } from './lib/mode.mjs';
@@ -203,8 +203,18 @@ server.listen(PORT, HOST, () => {
   // Heal a half-written cloud connection (api key present, workspaceId lost from
   // cloud.json): one authenticated read re-links the install. Fire-and-forget and a
   // no-op when connected or keyless, so it never delays boot or touches brand flags.
+  // Then hand the cloud any sign-in written while pendpost was down (a hand-run CLI auth):
+  // each cloud-managed brand whose .env changed since its last seal is resealed once.
   healConnection().then(
     (r) => { if (r.healed) logLine('ok', `cloud connection healed (workspace ${r.workspaceId})`); },
     () => { /* best-effort: the Cloud page's reconnect action retries on demand */ },
+  ).then(() => resealChangedBrands()).then(
+    (rows) => {
+      for (const r of rows || []) {
+        if (r.ok) logLine('ok', `cloud: resealed ${r.clientId} (its .env changed since the last seal)`);
+        else logLine('warn', `cloud: could not reseal ${r.clientId} at boot (${r.reason}); Re-sync now on the cloud page retries`);
+      }
+    },
+    () => { /* best-effort */ },
   );
 });

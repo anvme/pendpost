@@ -34,6 +34,7 @@ const cloud = await import('../lib/cloud-client.mjs');
 const CAMP = 'status-2026-07';
 const CLIENT = activeClientId();
 const FUTURE = new Date(Date.now() + 60 * 60_000).toISOString(); // due in 1h: owed, not overdue
+const RECENT = new Date(Date.now() - 2 * 60_000).toISOString(); // due 2 min ago: due, inside the overdue grace
 
 let pass = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); pass += 1; };
@@ -63,6 +64,8 @@ try {
   // --- green: nothing owed, contact fresh (connectWorkspace just reached the cloud) ---
   const g0 = cloud.cloudSyncStatus();
   ok(g0 && g0.state === 'green' && g0.reason === 'all_confirmed', 'cloud-managed, empty backlog, fresh contact -> green');
+  ok(Array.isArray(g0.issues) && g0.issues.length === 0, 'green carries an empty issues[]');
+  ok('lastError' in g0 && 'errorAt' in g0, 'the roll-up exposes lastError + errorAt from cloudContact');
 
   // --- yellow: an approved cloud-lane post without an ack -----------------------------
   await createCampaign({ id: CAMP, note: 'status contract', timezone: 'UTC', actor: 'owner' });
@@ -89,12 +92,19 @@ try {
   }
   const r1 = cloud.cloudSyncStatus();
   ok(r1.state === 'red' && r1.reason === 'overdue_unpublished' && r1.overdueCount === 1, 'ACKED but overdue-unpublished -> red (an ack proves acceptance, not firing)');
+  {
+    const i = r1.issues.find((x) => x.kind === 'overdue');
+    ok(i && i.campaign === CAMP && i.postId === 'p1' && i.lane === 'meta' && i.title === 'a quiet clip' && i.clientId === CLIENT && typeof i.clientName === 'string',
+      `an overdue post surfaces as an issue row naming the post, lane and title (${JSON.stringify(i)})`);
+  }
 
   // --- red: a cached cloud-lane failure ------------------------------------------------
   {
     const plan = path.join(WS, 'data', 'plans', CAMP, 'post-plan.json');
     const j = JSON.parse(fs.readFileSync(plan, 'utf8'));
-    j.posts.find((p) => p.id === 'p1').scheduledAt = FUTURE; // clear the overdue condition
+    // Just past due (inside the overdue grace): a failure can only be real for a post that
+    // IS due - one scheduled in the future is a stale echo and is ignored (see below).
+    j.posts.find((p) => p.id === 'p1').scheduledAt = RECENT;
     fs.writeFileSync(plan, JSON.stringify(j, null, 2));
     const s = loadState();
     s.cloudFailures = { [`${CAMP}:p1`]: { lane: 'meta', jobId: 'j1', message: 'token expired', at: new Date().toISOString() } };
@@ -102,6 +112,23 @@ try {
   }
   const r2 = cloud.cloudSyncStatus();
   ok(r2.state === 'red' && r2.reason === 'cloud_failures' && r2.failedCount === 1, 'a cached cloud-lane failure -> red');
+  {
+    const i = r2.issues[0];
+    ok(r2.issues.length === 1 && i.kind === 'post' && i.postId === 'p1' && i.lane === 'meta' && i.message === 'token expired' && i.terminal === false && i.code === null,
+      `a fire failure surfaces as ONE kind:'post' issue carrying the real message (${JSON.stringify(r2.issues)})`);
+    const s = loadState();
+    s.cloudFailures[`${CAMP}:p1`] = { ...s.cloudFailures[`${CAMP}:p1`], refusedCode: 'account_unresolved', message: 'Nothing was published: reconnect.', terminal: true };
+    saveState();
+    const rc = cloud.cloudSyncStatus();
+    const c = rc.issues[0];
+    ok(c && c.kind === 'credential' && c.code === 'account_unresolved' && c.terminal === true, `a credential refusal surfaces as kind:'credential' with its code + terminal flag (${JSON.stringify(c)})`);
+    s.cloudFailures[`${CAMP}:p1`] = { lane: 'meta', jobId: 'j1', message: 'token expired', at: new Date().toISOString() };
+    saveState();
+  }
+  // The same failure for a post the owner moved into the FUTURE is a stale echo -> not red.
+  { const plan = path.join(WS, 'data', 'plans', CAMP, 'post-plan.json'); const j = JSON.parse(fs.readFileSync(plan, 'utf8')); j.posts.find((p) => p.id === 'p1').scheduledAt = FUTURE; fs.writeFileSync(plan, JSON.stringify(j, null, 2)); }
+  const r2f = cloud.cloudSyncStatus();
+  ok(r2f.state !== 'red' && r2f.failedCount === 0, 'a failure for a future-scheduled post is ignored (it cannot have failed on time)');
   // A RELIC failure (its post is posted/gone) must not hold the dot red forever.
   { const s = loadState(); s.cloudFailures = { [`${CAMP}:p-long-gone`]: { lane: 'linkedin', jobId: 'j0', message: 'token expired', at: '2026-06-26T14:19:50.356Z' } }; saveState(); }
   const g3 = cloud.cloudSyncStatus();
@@ -128,6 +155,16 @@ try {
   { const s = loadState(); s.cloudAccepted = {}; saveState(); }
   const r4pending = cloud.cloudSyncStatus();
   ok(r4pending.state === 'amber' && r4pending.reason === 'cloud_unreachable', 'a pending post + stale contact -> amber cloud_unreachable (the real alarm is preserved)');
+  ok(r4pending.issues.length === 1 && r4pending.issues[0].kind === 'unreachable', 'unreachable surfaces as a kind:unreachable issue');
+  {
+    const s = loadState(); s.cloudContact = { ...s.cloudContact, lastError: 'cloud request failed: fetch failed', errorAt: '2026-09-25T08:00:00.000Z' }; saveState();
+    const u = cloud.cloudSyncStatus();
+    ok(u.lastError === 'cloud request failed: fetch failed' && u.errorAt === '2026-09-25T08:00:00.000Z' && u.issues[0].message === 'cloud request failed: fetch failed',
+      'the contact error rides lastError/errorAt and is the unreachable row message');
+    ok(u.issues[0].lastOkAt === '2020-01-01T00:00:00.000Z', 'the unreachable row carries lastOkAt (the last good contact) so the UI can say "last reached HH:MM"');
+    ok(!JSON.stringify(u).includes('ppc_test_secret'), 'the roll-up never carries the api key');
+    s.cloudContact = { okAt: '2020-01-01T00:00:00.000Z' }; saveState();
+  }
   { const s = loadState(); s.cloudAccepted = savedAcks; saveState(); }
 
   // --- red OUTRANKS amber: an overdue post while ALSO unreachable is still red ----------
@@ -148,6 +185,33 @@ try {
   { const s = loadState(); s.cloudContact = { okAt: new Date().toISOString(), workerStale: true }; saveState(); }
   const r6 = cloud.cloudSyncStatus();
   ok(r6.state === 'amber' && r6.reason === 'worker_stale', 'reachable but worker wedged -> amber (worker_stale)');
+  ok(r6.issues.some((x) => x.kind === 'worker_stale'), 'a wedged worker surfaces as a kind:worker_stale issue');
+  freshContact();
+
+  // --- worker_stale carries the worker's last heartbeat, like unreachable's lastOkAt ----
+  // /v1/health reports each process's beatAt; the ping keeps the newest stale beat so the
+  // row can say "last reached HH:MM" instead of no time at all.
+  {
+    const realFetch = global.fetch;
+    const BEAT = '2026-09-25T22:31:00.000Z';
+    const health = (worker) => async (input, init) => (String(input).endsWith('/v1/health')
+      ? { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, worker }) }
+      : realFetch(input, init));
+    global.fetch = health({ ok: false, processes: [
+      { process: 'runtime', beatAt: '2026-09-25T22:10:00.000Z', ageSeconds: 2000, stale: true },
+      { process: 'runtime-2', beatAt: BEAT, ageSeconds: 900, stale: true },
+      { process: 'cron', beatAt: new Date().toISOString(), ageSeconds: 10, stale: false },
+    ] });
+    const ping = await cloud.cloudHealthPing();
+    ok(ping && ping.workerStale === true && loadState().cloudContact.workerBeatAt === BEAT, 'the ping records the newest stale process beat as workerBeatAt');
+    const w = cloud.cloudSyncStatus().issues.find((x) => x.kind === 'worker_stale');
+    ok(w && w.lastOkAt === BEAT, 'the worker_stale row carries lastOkAt = the last worker heartbeat');
+    global.fetch = health({ ok: true, processes: [{ process: 'runtime', beatAt: new Date().toISOString(), ageSeconds: 5, stale: false }] });
+    await cloud.cloudHealthPing();
+    const c = loadState().cloudContact;
+    ok(c.workerStale === false && c.workerBeatAt == null, 'a healthy ping clears workerStale and workerBeatAt');
+    global.fetch = realFetch;
+  }
   freshContact();
 
   // --- local-only lanes never colour the cloud dot -------------------------------------

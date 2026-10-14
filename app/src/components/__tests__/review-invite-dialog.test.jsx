@@ -87,6 +87,28 @@ describe('InviteReviewerDialog (V5)', () => {
     expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
   });
 
+  it('a failed create says the plain sentence; the raw server line rides the "?" only', async () => {
+    createReviewer.mockRejectedValue(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderDialog();
+    await user.type(screen.getByLabelText('Reviewer name'), 'Martina');
+    await user.click(screen.getByRole('button', { name: 'Create link' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not create the link. Try again.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a message-less create failure still leaves the plain sentence as the alert', async () => {
+    createReviewer.mockRejectedValue(new Error());
+    const user = userEvent.setup();
+    renderDialog();
+    await user.type(screen.getByLabelText('Reviewer name'), 'Martina');
+    await user.click(screen.getByRole('button', { name: 'Create link' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not create the link. Try again.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
+  });
+
   it('preserves the typed name and expiry on a failed (duplicate) create', async () => {
     createReviewer.mockRejectedValue(Object.assign(new Error('dup'), { code: 'duplicate' }));
     const user = userEvent.setup();

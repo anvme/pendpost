@@ -82,7 +82,7 @@ import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure, isFetchFailure } from '../lib/util.mjs';
 import { activeRoot } from '../lib/context.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -244,6 +244,10 @@ async function ensureFreshToken({ force = false } = {}) {
   try {
     data = await tokenExchange({ grant_type: 'refresh_token', refresh_token: refreshToken });
   } catch (err) {
+    // Offline (DarkWake, no network) is not an expired refresh token: say we could not reach
+    // Google, with the cause, so neither the insights sweep nor the publish hold reads it as a
+    // sign-in problem.
+    if (isFetchFailure(err)) throw new Error(`GBP could not reach Google to renew access: ${describeFetchFailure(err)}`);
     throw new Error(`GBP token refresh failed (${err.message}). The refresh token likely expired or was revoked - re-run 'node scripts/gbp-social.mjs auth'.`);
   }
   const vars = persistTokens(data);
@@ -1094,7 +1098,7 @@ async function cmdPerformance() {
   try {
     token = await ensureFreshToken();
   } catch (err) {
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 200) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 200) }));
     return;
   }
   const loc = locationId();
@@ -1154,7 +1158,7 @@ async function cmdPerformance() {
       console.log('[warn] performance: Business Profile API access pending Google approval - no metrics available yet.');
       return;
     }
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 200) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 200) }));
     console.log(`[warn] performance failed: ${String(err.message || err).slice(0, 200)}`);
   }
 }
@@ -1308,6 +1312,6 @@ async function main() {
 
 main().catch(async (err) => {
   console.error('[err]', err.message || err);
-  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
   process.exit(1);
 });

@@ -250,9 +250,10 @@ try {
   // tool-less GET /api/engage overview: routes +7, tools +6.
   // 157 routes / 132 tools = +spec 50 P3's engage_undo and POST /api/engage/undo (+1 each) and P5a's four Needs you verbs with their REST twins (+4 each).
   // 159 routes / 133 tools = +radar_triage_bulk with its REST twin POST /api/radar/triage-bulk (+1 each) and the GUI-only POST /api/radar/restore (undo, no MCP twin, routes exemption): routes +2, tools +1.
-  ok(/159 routes, 133 tools/.test(parityOut), `parity is 159 routes / 133 tools: ${parityOut.trim()}`);
+  // 160 routes / 134 tools = +radar_tune (relevance plan 1e, the query tuner) with its REST twin POST /api/radar/tune (+1 each).
+  ok(/160 routes, 134 tools/.test(parityOut), `parity is 160 routes / 134 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 159/133 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 160/134 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

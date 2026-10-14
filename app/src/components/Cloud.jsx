@@ -10,19 +10,25 @@
 // a disclosure. Every control carries a <Tip>. The api-key secret is set via the
 // loopback handshake / .env and NEVER entered in the UI (presence + 4-char tail only).
 // Anti-slop (brand/DESIGN.md): single teal accent, font-bold max, no all-caps,
-// lowercase "pendpost"; the emerald/amber/red semantic palette is status-only.
+// lowercase "pendpost"; the amber/red semantic palette is spent only on attention, and an
+// all-clear result (a clean re-sync, a clean pull, an active plan) is quiet grey (CLEAN_RESULT).
 import { useEffect, useRef, useState } from 'react';
-import { Cloud as CloudIcon, CloudOff, Loader2, CheckCircle2, AlertCircle, ExternalLink, Monitor, LogOut, ListChecks, ShieldCheck, RefreshCw, DownloadCloud, CreditCard, Receipt, X, AtSign, ChevronLeft, ArrowRight, ChevronDown, UserCog, RefreshCcw, UserPlus } from 'lucide-react';
+import { Cloud as CloudIcon, CloudOff, Loader2, CheckCircle2, AlertCircle, ExternalLink, LogOut, ListChecks, ShieldCheck, RefreshCw, DownloadCloud, CreditCard, Receipt, X, AtSign, ChevronLeft, ArrowRight, ChevronDown, UserCog, RefreshCcw, UserPlus } from 'lucide-react';
 import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, enableStart, healCloud, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud } from '../lib/cloud.js';
 import { useClients } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
+import { fmtDateShort } from '../lib/format.js';
 import { INNER_SURFACE, EYEBROW, PLATFORM_META } from './ui.jsx';
 import { LanesHonestyNote } from './CloudLanesNote.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
+import InfoTip from './ui/InfoTip.jsx';
 import { Switch } from './ui/Switch.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import { useConfirm } from './ui/confirm.jsx';
+import { TAP_TARGET } from './ui/recipes.js';
+import { CloudIssueRow, RecheckButton, CONNECTIVITY, cloudHealth, healthDot } from './CloudIssues.jsx';
+import { humanizeAction, humanizeFailure, laneLabel } from '../lib/failureCopy.js';
 
 // A platform's human name (Facebook, Instagram, ...), falling back to the raw key
 // for any platform the meta table does not know - never a token, only the name.
@@ -34,9 +40,31 @@ const BTN_GHOST = `${BTN} text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 
 // A clearly-bordered secondary button: more visible than a bare ghost (used for the
 // always-present "manage billing" affordance) without competing as a brand CTA.
 const BTN_OUTLINE = `${BTN} ring-1 ring-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:ring-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800/60`;
+// A <details> summary on this page: a chevron (turned by `group-open`) so the disclosure
+// reads as one, and a 44px hit area without changing the painted line.
+const DISCLOSURE_SUMMARY = `flex w-fit cursor-pointer list-none items-center gap-1 font-bold tracking-tight text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300 ${TAP_TARGET}`;
 
 // The managed-offering page (/services). ?from=app flips its CTA to "enable always-on".
 const SERVICES_URL = 'https://pendpost.com/services?from=app';
+// The surface of an ALL-CLEAR result box. Canon Tier 2: colour is spent only on attention, so a
+// clean outcome gets none; a refused or failed one keeps the amber warning tone.
+const CLEAN_RESULT = 'bg-zinc-500/10 text-zinc-700 dark:text-zinc-200';
+
+// A failed action's alert, the Setup anatomy: the plain sentence ({ text, raw } from
+// humanizeAction with the surface's own fallback key) is the alert, and the raw server or
+// engine line rides the house "?" beside it, never inline and never inside the alert.
+// `box` is the surface's own frame (a banner or a bare line); `className` styles the sentence.
+function ActionError({ error, box = '', className = 'text-xs text-red-600 dark:text-red-300', children = null }) {
+  if (!error) return null;
+  return (
+    <div className={`flex items-start gap-1 ${box}`}>
+      <p role="alert" className={className}>{children}{error.text}</p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
+const actionAlert = (err, t, fallbackKey) => humanizeAction(err, t, { fallbackKey });
+const ALERT_BANNER = 'rounded-xl bg-red-500/10 p-3';
 
 // The deep-link contract (Shared-contract, owned by B; reused verbatim by the website / D):
 //   ?plan=starter|studio|agency   (pre-selects the tier on the Cloud page)
@@ -103,7 +131,7 @@ function ReconnectView() {
       setState('idle');
     } catch (err) {
       setState('error');
-      setError(err.message || t('cloud.reconnect.error'));
+      setError(actionAlert(err, t, 'cloud.reconnect.error'));
     }
   };
   return (
@@ -114,10 +142,9 @@ function ReconnectView() {
       </div>
       <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.reconnect.body')}</p>
       {state === 'error' && error ? (
-        <p className="flex items-center gap-1.5 text-[11px] font-bold text-red-600 dark:text-red-400">
+        <ActionError error={error} className="flex items-center gap-1.5 text-[11px] font-bold text-red-600 dark:text-red-400">
           <AlertCircle size={13} aria-hidden="true" />
-          {error}
-        </p>
+        </ActionError>
       ) : null}
       <button type="button" className={BTN_BRAND} onClick={run} disabled={state === 'working'}>
         {state === 'working' ? <Loader2 size={14} className="mr-1.5 inline animate-spin" aria-hidden="true" /> : null}
@@ -143,7 +170,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
     const poll = setInterval(() => invalidate(), ENABLE_POLL_MS);
     timeoutRef.current = setTimeout(() => {
       setState('error');
-      setError(t('cloud.enable.timeout'));
+      setError({ text: t('cloud.enable.timeout'), raw: null });
     }, ENABLE_TIMEOUT_MS);
     return () => { clearInterval(poll); clearTimeout(timeoutRef.current); };
   }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -157,7 +184,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
       setState('waiting');
     } catch (err) {
       setState('error');
-      setError(err.message || t('cloud.enable.error'));
+      setError(actionAlert(err, t, 'cloud.enable.error'));
     }
   };
 
@@ -229,7 +256,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
         ) : null}
 
         {state === 'error' && error ? (
-          <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p>
+          <ActionError error={error} box={ALERT_BANNER} />
         ) : null}
 
         {state === 'starting' ? (
@@ -255,7 +282,8 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
 
 // The push-result summary: counts + the per-bucket detail lines, rendered after a
 // successful re-sync. Pure presentation of the { pushed, skipped, accepted, refused }
-// arrays - a refused job carries the server's { code, message } verbatim.
+// arrays. A refused job carries the server's { code, message }: the line reads the same plain
+// reason as a sync refusal (refusalReason), and the server's own line rides the "?".
 function PushSummary({ result }) {
   const t = useT();
   const pushed = result.pushed || [];
@@ -263,7 +291,7 @@ function PushSummary({ result }) {
   const accepted = result.accepted || [];
   const refused = result.refused || [];
   return (
-    <div role="status" className="space-y-2 rounded-xl bg-emerald-500/10 p-3 text-xs text-emerald-800 dark:text-emerald-200">
+    <div role="status" className={`space-y-2 rounded-xl p-3 text-xs ${CLEAN_RESULT}`}>
       <p className="flex items-center gap-1.5 font-bold">
         <CheckCircle2 size={13} aria-hidden="true" />
         {t('cloud.push.summary', { pushed: pushed.length, skipped: skipped.length, accepted: accepted.length, refused: refused.length })}
@@ -273,7 +301,11 @@ function PushSummary({ result }) {
           {refused.map((r, i) => (
             <li key={`refused-${i}`} className="flex items-start gap-1.5">
               <AlertCircle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
-              <span className="min-w-0 flex-1">{r.message || r.code}</span>
+              <span className="min-w-0 flex-1">
+                <InfoTip label={r.message || null}>
+                  <span>{refusalReason({ refusedCode: r.refusedCode || r.code, lane: r.lane }, t)}</span>
+                </InfoTip>
+              </span>
             </li>
           ))}
         </ul>
@@ -291,12 +323,14 @@ function TokensSummary({ tokens }) {
   const t = useT();
   const handed = tokens?.handed || [];
   const skipped = tokens?.skipped || [];
-  // A skip reason maps to a plain-words key; an unknown code shows verbatim so the
-  // operator still sees something actionable rather than a blank.
+  // A skip reason maps to a plain-words key; an unknown code reads the generic "not handed
+  // over" and the raw code rides the "?" (never inline).
   const reasonKey = { no_token_in_env: 'cloud.tokens.reason.noToken', no_account_id_in_env: 'cloud.tokens.reason.noAccountId' };
-  const reasonText = (reason) => (reasonKey[reason] ? t(reasonKey[reason]) : reason);
+  const reasonText = (reason) => t(reasonKey[reason] || 'cloud.tokens.reason.generic');
+  // r5: the reason reads in plain words; the file it comes from (.env) sits behind the "?".
+  const reasonTip = (reason) => (reasonKey[reason] ? t('cloud.tokens.reason.envTip') : reason || null);
   return (
-    <div role="status" className="space-y-2 rounded-xl bg-emerald-500/10 p-3 text-xs text-emerald-800 dark:text-emerald-200">
+    <div role="status" className={`space-y-2 rounded-xl p-3 text-xs ${CLEAN_RESULT}`}>
       <p className="flex items-center gap-1.5 font-bold">
         <ShieldCheck size={13} aria-hidden="true" />
         {t('cloud.tokens.summary', { handed: handed.length, skipped: skipped.length })}
@@ -316,7 +350,11 @@ function TokensSummary({ tokens }) {
           {skipped.map((s, i) => (
             <li key={`skipped-${i}`} className="flex items-start gap-1.5">
               <AlertCircle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
-              <span className="min-w-0 flex-1">{t('cloud.tokens.skippedLine', { platform: platformLabel(s.platform), reason: reasonText(s.reason) })}</span>
+              <span className="min-w-0 flex-1">
+                <InfoTip label={reasonTip(s.reason)}>
+                  <span>{t('cloud.tokens.skippedLine', { platform: platformLabel(s.platform), reason: reasonText(s.reason) })}</span>
+                </InfoTip>
+              </span>
             </li>
           ))}
         </ul>
@@ -332,7 +370,7 @@ function ResyncSummary({ result }) {
   const t = useT();
   return (
     <div role="status" className="space-y-2">
-      <p className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-200">
+      <p className="flex items-center gap-1.5 text-xs font-bold text-zinc-700 dark:text-zinc-200">
         <CheckCircle2 size={13} aria-hidden="true" />
         {t('cloud.resync.done')}
       </p>
@@ -342,26 +380,52 @@ function ResyncSummary({ result }) {
   );
 }
 
+// A refusal's human reason: our own localized copy for the credential codes and the
+// known expected codes, else a plain generic line. Never the raw code (the operator should
+// not have to decode "account_mismatch") and never the engine's English message inline:
+// callers put that behind the "?".
+function refusalReason(r, t) {
+  const code = r.refusedCode || '';
+  const credKey = `connection.issue.msg.${code}`;
+  const cred = code ? t(credKey, { lane: laneLabel(r.lane) || t('failure.platform') }) : credKey;
+  if (cred !== credKey) return cred;
+  const knownKey = `cloud.refused.${code}`;
+  const known = code ? t(knownKey) : knownKey;
+  if (known !== knownKey) return known;
+  return t('cloud.refused.generic');
+}
+
 // The reconcile summary: the result of pulling the cloud's published outcomes back
-// into the local plans. Pure presentation of { patched, skipped, refused } - a refused
-// post shows its id + refusal code so the operator sees why it did not go live.
+// into the local plans. Pure presentation of { patched, skipped, refused, failed }. The
+// quiet check is reserved for a clean pull: anything refused or failed turns the whole
+// summary into the warning tone, with one line per post saying why in plain words.
 function ReconcileSummary({ result }) {
   const t = useT();
   const patched = result.patched || [];
   const skipped = result.skipped || [];
-  const refused = result.refused || [];
+  const problems = [
+    ...(result.failed || []).map((f) => ({ postId: f.postId, reason: humanizeFailure({ message: f.failureMessage || f.message, lane: f.lane }, t).text })),
+    ...(result.refused || []).map((r) => ({ postId: r.postId, reason: refusalReason(r, t), raw: r.message || null })),
+  ];
+  const clean = problems.length === 0;
   return (
-    <div role="status" className="space-y-2 rounded-xl bg-emerald-500/10 p-3 text-xs text-emerald-800 dark:text-emerald-200">
+    <div role="status" className={`space-y-2 rounded-xl p-3 text-xs ${clean ? CLEAN_RESULT : 'bg-amber-500/10 text-amber-800 dark:text-amber-200'}`}>
       <p className="flex items-center gap-1.5 font-bold">
-        <CheckCircle2 size={13} aria-hidden="true" />
-        {t('cloud.sync.summary', { patched: patched.length, skipped: skipped.length, refused: refused.length })}
+        {clean ? <CheckCircle2 size={13} aria-hidden="true" /> : <AlertCircle size={13} aria-hidden="true" />}
+        {clean
+          ? t('cloud.sync.summary', { patched: patched.length, skipped: skipped.length, refused: 0 })
+          : t('cloud.sync.summaryProblems', { patched: patched.length, skipped: skipped.length, problems: problems.length })}
       </p>
-      {refused.length ? (
+      {problems.length ? (
         <ul className="space-y-1 pl-0.5 text-amber-700 dark:text-amber-300">
-          {refused.map((r, i) => (
-            <li key={`sync-refused-${i}`} className="flex items-start gap-1.5">
+          {problems.map((pr, i) => (
+            <li key={`sync-problem-${i}`} className="flex items-start gap-1.5">
               <AlertCircle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
-              <span className="min-w-0 flex-1">{t('cloud.sync.refusedLine', { postId: r.postId, code: r.refusedCode || r.state })}</span>
+              <span className="min-w-0 flex-1 break-words">
+                <InfoTip label={pr.raw}>
+                  <span>{t('cloud.sync.problemLine', { post: pr.postId, reason: pr.reason })}</span>
+                </InfoTip>
+              </span>
             </li>
           ))}
         </ul>
@@ -400,7 +464,7 @@ function EjectChecklist({ bundle, onDismiss }) {
             {steps.map((step, i) => (
               <li key={`reauth-${i}`} className="flex items-start gap-1.5">
                 <CheckCircle2 size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
-                <span className="min-w-0 flex-1"><span className="font-bold">{platformLabel(step.platform)}</span> - {step.howTo}</span>
+                <span className="min-w-0 flex-1"><span className="font-bold">{platformLabel(step.platform)}</span>: {step.howTo}</span>
               </li>
             ))}
           </ul>
@@ -451,24 +515,25 @@ function MenuItem({ icon: Icon, label, sublabel, onClick, busy = false, tone = '
 function AccountMenu({ email, accountPortalUrl, canManage, onSignOut, onEject, busy }) {
   const t = useT();
   const openPortal = async () => { try { await startBillingPortal(); } catch { /* surfaced by the meter's own error path */ } };
-  const label = email || t('cloud.account.unknownEmail');
+  // r5: with no known email the line reads a plain "Signed in", never a placeholder name.
+  const label = email || null;
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
           className="flex max-w-full items-center gap-1.5 rounded-lg px-1.5 py-0.5 text-[11px] text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
-          aria-label={t('cloud.account.menuAria', { email: label })}
+          aria-label={label ? t('cloud.account.menuAria', { email: label }) : t('cloud.account.menuTitle')}
         >
           <AtSign size={12} className="shrink-0" aria-hidden="true" />
-          <span className="min-w-0 truncate">{t('cloud.account.signedInAs', { email: label })}</span>
+          <span className="min-w-0 truncate">{label ? t('cloud.account.signedInAs', { email: label }) : t('cloud.account.signedIn')}</span>
           <ChevronDown size={12} className="shrink-0" aria-hidden="true" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64">
         <div className="px-3 pb-2 pt-1">
           <p className="text-[10px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400">{t('cloud.account.menuTitle')}</p>
-          <p className="mt-0.5 truncate text-xs font-bold text-zinc-700 dark:text-zinc-200">{label}</p>
+          {label ? <p className="mt-0.5 truncate text-xs font-bold text-zinc-700 dark:text-zinc-200">{label}</p> : null}
         </div>
         <div className="space-y-0.5">
           <PopoverClose asChild>
@@ -525,7 +590,7 @@ function AccountMenu({ email, accountPortalUrl, canManage, onSignOut, onEject, b
 // always-on brands' jobs) and eject (disconnect back to self-host). The technical
 // connection fields live in a disclosure at the bottom. There is NO standalone
 // pause/resume: a client's switch IS its pause.
-function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null, onLaunchConsumed }) {
+function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null, onLaunchConsumed, onIssueAction }) {
   const t = useT();
   const invalidate = useInvalidateCloud();
   // The connected view is where the deep-linked tier is finally consumed (SubscriptionMeter seeds
@@ -535,8 +600,16 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
     if (deepLinkPlan && onLaunchConsumed) onLaunchConsumed();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const confirm = useConfirm();
-  const { data: sub } = useCloudSubscription(true);
+  const { data: sub, isError: subFailed } = useCloudSubscription(true);
   const accountEmail = sub?.email || null;
+  // The pill reads the delivery guarantee (sync), not just the subscription, through the
+  // SAME cloudHealth derivation as the header dot, so the two can never disagree. A
+  // subscription read that FAILED is unknown, and unknown must never render as fine.
+  const health = cloudHealth(cloud.sync || null, subFailed);
+  const syncState = health.state;
+  // The cloud as a whole (one workspace) is unreachable: stated ONCE here, under the pill,
+  // with its last good contact and the one action; each project row then shares the state.
+  const connectivity = ((cloud.sync && cloud.sync.issues) || []).find((i) => CONNECTIVITY.has(i.kind)) || null;
   const canManage = sub && (sub.status === 'active' || sub.status === 'past_due');
   const accountPortalUrl = cloud.accountPortalUrl || null;
   const tail = cloud.apiKey?.tail || null;
@@ -557,7 +630,7 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
       invalidate(alsoActivity);
       return data;
     } catch (err) {
-      setError(err.message || t('cloud.action.error'));
+      setError(actionAlert(err, t, 'cloud.action.error'));
       return null;
     } finally {
       setBusy(null);
@@ -619,7 +692,14 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
             least one brand always-on), so the pill can never drift from what fires. */}
         {sub && sub.alwaysOn === false
           ? <IconBadge icon={CloudOff} tone="neutral" text={t('cloud.status.paused')} label={t('cloud.status.pausedTip')} />
-          : <IconBadge icon={CloudIcon} tone="ok" text={t('cloud.status.on')} />}
+          : syncState === 'red'
+            ? <IconBadge icon={AlertCircle} tone="err" text={t('cloud.status.broken')} label={t('cloud.status.brokenTip')} />
+            : syncState === 'amber'
+              ? <IconBadge icon={AlertCircle} tone="warn" text={t('cloud.status.attention')} label={health.reason === 'subscription_failed' ? t('cloud.status.unknownTip') : t('cloud.status.attentionTip')} />
+              // All clear spends no colour: a neutral "On" (green is for nothing). Waiting for
+              // the cloud to confirm (yellow = push_pending) is no warning either: the same
+              // neutral "On", and the waiting project's row says the sentence once.
+              : <IconBadge icon={CloudIcon} tone="neutral" text={t('cloud.status.on')} />}
         <AccountMenu
           email={accountEmail}
           accountPortalUrl={accountPortalUrl}
@@ -630,6 +710,22 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
         />
       </div>
 
+      {/* The pill's reason when it is not a single project's: the cloud as a whole is
+          unreachable (the SAME row the header popover shows: last reached HH:MM, the
+          humanized last error, "Check again"), or the subscription could not be read
+          (said in one line instead of silently dropping Plan & billing). A project's own
+          reason lives on its row below. */}
+      {connectivity ? (
+        <ul aria-label={t('connection.issue.listAria')}>
+          <CloudIssueRow issue={connectivity} onRecheck={() => invalidate()} />
+        </ul>
+      ) : health.reason === 'subscription_failed' ? (
+        <div className="space-y-1.5">
+          <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">{`${t('connection.sync.subscriptionFailed')}. ${t('connection.sync.reason.subscription_failed')}`}</p>
+          <RecheckButton onRecheck={() => invalidate()} />
+        </div>
+      ) : null}
+
       {/* The Stripe-return banner - shown when the app is opened at ?cloud=checkout. It polls
           the subscription and reflects the now-active plan, or calmly handles a backed-out
           checkout (never a dead end). Sits at the top of the content so the outcome is the
@@ -637,21 +733,26 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
       {checkoutReturn ? <CheckoutReturn onDismiss={onReturnDismiss} /> : null}
 
       {/* (2) Marken - the primary control. Renders its own card (or nothing). */}
-      <CloudClients />
+      <CloudClients sync={cloud.sync || null} connectivity={connectivity} onIssueAction={onIssueAction} />
 
       {/* (3) Plan & Abrechnung - compact, full breakdown behind a toggle. */}
       <SubscriptionMeter deepLinkPlan={deepLinkPlan} deepLinkInterval={deepLinkInterval} />
 
       {/* Maintenance results surface here, wherever they were triggered. */}
-      {error ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} box={ALERT_BANNER} />
       {resyncResult ? <ResyncSummary result={resyncResult} /> : null}
       {reconcileResult ? <ReconcileSummary result={reconcileResult} /> : null}
 
-      {/* (4) Maintenance - quiet, de-emphasized ghost controls below a divider (rare, but
-          kept visible/one click away, not buried). Eject + sign-out now live in the account
-          menu (above), so this row is purely the two catch-up actions - no destructive
-          control competes here. */}
-      <div className="flex flex-wrap items-center gap-2 border-t border-black/5 pt-4 dark:border-white/5">
+      {/* (4) Connection details - the two catch-up actions and the read-only connection
+          fields, collapsed. Both actions run automatically in the background, so they are
+          rare manual overrides and no longer sit on the default surface. Eject + sign-out
+          live in the account menu (above). */}
+      <details className="group border-t border-black/5 pt-4 text-[11px] dark:border-white/5">
+        <summary className={DISCLOSURE_SUMMARY}>
+          <ChevronDown size={12} className="-rotate-90 transition group-open:rotate-0" aria-hidden="true" />
+          {t('cloud.details.summary')}
+        </summary>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <Tip label={t('cloud.sync.tip')}>
           <button type="button" onClick={onSyncNow} disabled={busy != null} aria-busy={busy === 'sync'} className={`flex items-center gap-1.5 text-xs ${BTN_GHOST}`}>
             {busy === 'sync' ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <DownloadCloud size={14} aria-hidden="true" />}
@@ -665,13 +766,7 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
           </button>
         </Tip>
       </div>
-
-      {/* Technical connection fields - read-only, collapsed under "connection details". */}
-      <details className="text-[11px]">
-        <summary className="cursor-pointer list-none font-bold tracking-tight text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
-          {t('cloud.details.summary')}
-        </summary>
-        <dl className="mt-2 space-y-1.5">
+        <dl className="mt-3 space-y-1.5">
           <div className="flex flex-wrap items-center gap-x-2">
             <dt className="text-zinc-500 dark:text-zinc-400">{t('cloud.field.baseUrl.label')}</dt>
             <dd className="min-w-0 break-all font-mono text-zinc-700 dark:text-zinc-200">{cloud.baseUrl || t('cloud.field.unset')}</dd>
@@ -827,7 +922,7 @@ function OrderSummary({ plan, interval, brandsBilled, busy, error, onBack, onCon
         </div>
       </dl>
       <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.summary.note')}</p>
-      {error ? <p role="alert" className="text-xs text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} />
       <button type="button" onClick={onConfirm} disabled={busy} aria-busy={busy} className={`flex w-full items-center justify-center gap-1.5 ${BTN_BRAND}`}>
         {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <CreditCard size={14} aria-hidden="true" />}
         {t('cloud.summary.confirm')}
@@ -864,7 +959,7 @@ function CheckoutFlow({ defaultPlan = 'starter', defaultInterval = 'month', bran
       setManualUrl(url || null);
       setStage('opening');
     } catch (err) {
-      setError(err.message || t('cloud.checkout.error'));
+      setError(actionAlert(err, t, 'cloud.checkout.error'));
     } finally {
       setBusy(false);
     }
@@ -948,13 +1043,13 @@ function CheckoutReturn({ onDismiss }) {
 
   if (phase === 'active') {
     return (
-      <div role="status" className="flex items-start gap-2 rounded-2xl bg-emerald-500/10 p-4 text-xs text-emerald-800 dark:text-emerald-200">
+      <div role="status" className={`flex items-start gap-2 rounded-2xl p-4 text-xs ${CLEAN_RESULT}`}>
         <CheckCircle2 size={15} className="mt-0.5 shrink-0" aria-hidden="true" />
         <div className="min-w-0 flex-1 space-y-0.5">
           <p className="font-bold">{tierLabel ? t('cloud.return.activeTitle', { plan: tierLabel }) : t('cloud.return.activeTitleGeneric')}</p>
           <p>{t('cloud.return.activeBody')}</p>
         </div>
-        <button type="button" onClick={onDismiss} aria-label={t('cloud.eject.dismiss')} className="shrink-0 rounded-md p-0.5 text-emerald-700/70 transition hover:bg-emerald-500/20 hover:text-emerald-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-emerald-300/70 dark:hover:text-emerald-100">
+        <button type="button" onClick={onDismiss} aria-label={t('cloud.eject.dismiss')} className="shrink-0 rounded-md p-0.5 text-zinc-500 transition hover:bg-zinc-500/20 hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100">
           <X size={13} aria-hidden="true" />
         </button>
       </div>
@@ -1010,7 +1105,6 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
   const brandsBilled = sub.brandsBilled ?? 0;
   // The estimated overage is computed BY THE ENGINE; the app just renders it.
   const estCents = sub.estOverageCents ?? 0;
-  const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
 
   const pct = Math.min(100, Math.round((sub.postsUsed / sub.postsIncluded) * 100));
   const over = sub.postsUsed > sub.postsIncluded;
@@ -1045,13 +1139,16 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
   const nearCap = capSet && sub.estOverageCents >= 0.8 * sub.spendCapCents;
   const capReached = sub.stopReason === 'spend_cap_reached';
 
+  // Resolves to fn()'s result on success (true when it returns nothing) and null on a
+  // failure, so a caller can close its editor and refresh only after a real success.
   const run = async (kind, fn) => {
     setBusy(kind);
     setError(null);
     try {
-      await fn();
+      return (await fn()) ?? true;
     } catch (err) {
-      setError(err.message || t('cloud.action.error'));
+      setError(actionAlert(err, t, 'cloud.action.error'));
+      return null;
     } finally {
       setBusy(null);
     }
@@ -1126,7 +1223,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
         </div>
       ) : null}
 
-      {error ? <p role="alert" className="text-xs text-red-600 dark:text-red-300">{error}</p> : null}
+      <ActionError error={error} />
 
       {/* The in-app purchase flow - available PROACTIVELY for any non-paid workspace (trialing,
           none, canceled), not only at exhaustion. One flow, one primary action per screen:
@@ -1153,11 +1250,15 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
 
       {/* Details - the full cost breakdown, rate basis, and the spend-cap control. Rarely
           needed day-to-day, so collapsed by default to keep the card calm. */}
-      <details className="text-[11px]">
-        <summary className="cursor-pointer list-none font-bold tracking-tight text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
+      <details className="group text-[11px]">
+        <summary className={DISCLOSURE_SUMMARY}>
+          <ChevronDown size={12} className="-rotate-90 transition group-open:rotate-0" aria-hidden="true" />
           {t('cloud.billing.details')}
         </summary>
         <div className="mt-2 space-y-2">
+          {/* How projects are billed - moved here from above the project list, where it
+              stood as permanent prose on top of the controls. */}
+          <p className="text-zinc-500 dark:text-zinc-400">{t('cloud.clients.body')}</p>
           <dl className="space-y-1 text-zinc-500 dark:text-zinc-400">
             <div className="flex items-center justify-between gap-2">
               <dt>{t('cloud.cost.estimate')}</dt>
@@ -1174,7 +1275,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
             ) : null}
             <div className="flex items-center justify-between gap-2">
               <dt>{renewsValid ? t('cloud.cost.renews') : t('cloud.cost.resetsMonthly')}</dt>
-              {renewsValid ? <dd>{renewsAt.toLocaleDateString()}</dd> : null}
+              {renewsValid ? <dd>{fmtDateShort(renewsAt)}</dd> : null}
             </div>
           </dl>
           <p className="text-zinc-500 dark:text-zinc-400">{t('connection.price.cloud')}</p>
@@ -1231,7 +1332,12 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
 // Each switch confirms BOTH directions with the consequences spelled out (a real billing +
 // publishing change). A cloud-on row carries a quiet caption - that replaces the old
 // standalone "local paused" note, surfaced where it actually applies.
-function CloudClients() {
+// A project's health dot colour on its row comes from healthDot (CloudIssues.jsx), the same
+// function as the header dot. An all-clear row carries no dot, a waiting row a neutral one:
+// colour is spent on attention only, and the dot never stands alone - every dotted row also
+// carries its sentence.
+
+function CloudClients({ sync = null, connectivity = null, onIssueAction }) {
   const t = useT();
   const confirm = useConfirm();
   const { data, isLoading } = useCloudClients();
@@ -1250,7 +1356,6 @@ function CloudClients() {
   // The per-extra-brand charge for the active tier, shown so the cost is visible BEFORE a
   // brand is switched on. The rate comes from the view's own field.
   const extraBrandCents = sub && sub.extraBrandCents ? sub.extraBrandCents : 0;
-  const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
   // A brand only runs in the cloud under an active paid plan. Without one, turning a brand ON
   // is gated: we point to the plan picker just below instead of silently enabling (and billing)
   // it. Turning OFF is always allowed. Mirrors the file's isPaid/canManage convention.
@@ -1283,7 +1388,7 @@ function CloudClients() {
       await setClientAlwaysOn(c.clientId, next);
       invalidate(true); // turning a client on pushes its jobs -> refresh activity too
     } catch (err) {
-      setError(err.message || t('cloud.clients.error'));
+      setError(actionAlert(err, t, 'cloud.clients.error'));
     } finally {
       setBusyIds((prev) => {
         const nextSet = new Set(prev);
@@ -1297,35 +1402,72 @@ function CloudClients() {
 
   return (
     <div className={`space-y-3 rounded-2xl p-4 ${INNER_SURFACE}`}>
-      <div className="space-y-1">
-        <h3 className={EYEBROW}>{t('cloud.clients.title')}</h3>
-        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.clients.body')}</p>
-      </div>
-      {error ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p> : null}
+      <h3 className={EYEBROW}>{t('cloud.clients.title')}</h3>
+      <ActionError error={error} box={ALERT_BANNER} />
       <ul className="divide-y divide-black/5 dark:divide-white/5">
-        {clients.map((c) => (
-          <li key={c.clientId} className="flex items-center gap-3 py-2.5">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-bold text-zinc-700 dark:text-zinc-200">
-                {c.name}
-                {c.active ? <span className="ml-1.5 text-[10px] font-normal text-zinc-500 dark:text-zinc-400">{t('cloud.clients.active')}</span> : null}
-              </p>
-              <p className={`truncate text-[11px] ${c.alwaysOn ? 'text-zinc-500 dark:text-zinc-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
-                {c.alwaysOn ? t('cloud.clients.cloudCaption') : t('cloud.clients.localCaption')}
-              </p>
-            </div>
+        {clients.map((c) => {
+          // Per-project health, from the same roll-up as the header dot. The row lists
+          // EVERY issue of the project with the same row the header popover uses (title,
+          // lane, plain reason, one fix), never just the first. A cloud that is unreachable
+          // as a whole is every always-on project's state (it is one workspace), so an
+          // otherwise green row shares it instead of claiming all is well. A state without
+          // an issue row (push pending, sync stopped, on-flag drift) says its reason.
+          const own = c.alwaysOn ? ((sync && sync.clients) || []).find((h) => h.clientId === c.clientId) : null;
+          const rowIssues = own ? ((sync && sync.issues) || []).filter((i) => i.clientId === c.clientId && !CONNECTIVITY.has(i.kind)) : [];
+          const shared = Boolean(c.alwaysOn && connectivity && (!own || own.state !== 'red'));
+          const state = shared ? 'amber' : own ? own.state : null;
+          const reasonKey = own && !shared && own.state !== 'green' ? `connection.sync.reason.${own.reason}` : null;
+          const reasonText = reasonKey && t(reasonKey) !== reasonKey ? t(reasonKey) : null;
+          // D12: waiting for the cloud to confirm (yellow = push_pending, "meist innert einer
+          // Minute") is not a warning, so healthDot paints it neutral; amber stays for states
+          // that need a look.
+          const dotClass = healthDot(state);
+          return (
+          // Tier-3 (phase 3): a two-column grid. The name line carries the switch; the detail
+          // (issues, reason, caption) spans the full width below it, so on a phone the issue
+          // rows are never squeezed into the column beside the switch.
+          <li key={c.clientId} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2.5">
+            <p className="flex min-w-0 items-center gap-1.5 text-sm font-bold text-zinc-700 dark:text-zinc-200">
+              {dotClass ? <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden="true" /> : null}
+              <span className="truncate">{c.name}</span>
+              {c.active ? <span className="shrink-0 text-[10px] font-normal text-zinc-500 dark:text-zinc-400">{t('cloud.clients.active')}</span> : null}
+            </p>
             <Switch
               checked={c.alwaysOn}
               onChange={(next) => toggle(c, next)}
               disabled={busyIds.has(c.clientId)}
               busy={busyIds.has(c.clientId)}
-              offIcon={Monitor}
-              onIcon={CloudIcon}
               ariaLabel={t('cloud.clients.switchAria', { name: c.name })}
               tipLabel={c.alwaysOn ? t('cloud.clients.onTip') : t('cloud.clients.offTip')}
             />
+            <div className="col-span-2 min-w-0">
+              {rowIssues.length ? (
+                <ul className="mt-1.5 space-y-1.5" aria-label={t('connection.issue.listAria')}>
+                  {rowIssues.map((issue, i) => (
+                    <CloudIssueRow
+                      key={`${issue.kind}:${issue.campaign || ''}:${issue.postId || i}`}
+                      issue={issue}
+                      onAction={onIssueAction}
+                      onRecheck={() => invalidate()}
+                    />
+                  ))}
+                </ul>
+              ) : shared ? (
+                <p className="truncate text-[11px] text-zinc-600 dark:text-zinc-300">{t(`connection.issue.kind.${connectivity.kind}`)}</p>
+              ) : reasonText ? (
+                <div className="mt-0.5 space-y-1.5">
+                  <p className="break-words text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">{reasonText}</p>
+                  {state !== 'red' ? <RecheckButton onRecheck={() => invalidate()} /> : null}
+                </div>
+              ) : (
+                <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                  {c.alwaysOn ? t('cloud.clients.cloudCaption') : t('cloud.clients.localCaption')}
+                </p>
+              )}
+            </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
     </div>
   );
@@ -1357,7 +1499,7 @@ function clearLaunchStash() {
   } catch { /* best-effort */ }
 }
 
-export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null }) {
+export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null, onIssueAction }) {
   const t = useT();
   const { data: cloud, isLoading } = useCloud();
   // Resolve the deep-linked tier once: explicit launch props (an already-connected launch) take
@@ -1392,11 +1534,10 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
   }, [connected]);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
-      <header>
-        <h2 className="font-display text-lg font-bold">{t('cloud.title')}</h2>
-        {connected ? null : <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.subtitle')}</p>}
-      </header>
+    <div className="mx-auto w-full max-w-2xl space-y-6">
+      {/* No page heading here: the app header already titles the page ("24/7 Cloud-Service");
+          a second H1-sized copy right below it only pushed the content down. */}
+      {connected ? null : <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.subtitle')}</p>}
 
       {ejectResult ? <EjectChecklist bundle={ejectResult} onDismiss={() => setEjectResult(null)} /> : null}
 
@@ -1411,6 +1552,7 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
       ) : connected ? (
         <ConnectedView
           cloud={cloud}
+          onIssueAction={onIssueAction}
           onEjected={setEjectResult}
           checkoutReturn={checkoutReturn}
           onReturnDismiss={onReturnDismiss}

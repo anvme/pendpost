@@ -50,3 +50,26 @@ describe('PostPreview (FR3 story/reel parity)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
+
+// LinkedIn builds an article card ONLY for a LinkedIn text post with a link
+// (scripts/linkedin-social.mjs `else if (post.link)`); an image without a link is
+// dropped and the post goes out as plain text. No other lane gets a LinkedIn card.
+describe('PostPreview shows the LinkedIn card only where LinkedIn builds one', () => {
+  const link = 'https://example.com/blog/post';
+  it.each([['x'], ['telegram']])('a %s text post with a link shows no LinkedIn card', (platform) => {
+    const { container } = render(<PostPreview post={{ type: 'text', platforms: [platform], title: 'Hello', link, image: 'https://example.com/hero.jpg' }} />);
+    expect(screen.queryByText(/linkedin card preview/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('a LinkedIn text post with an image but no link shows no card (it publishes as plain text)', () => {
+    render(<PostPreview post={{ type: 'text', platforms: ['linkedin'], title: 'Hello', link: '', image: 'https://example.com/hero.jpg' }} />);
+    expect(screen.queryByText(/linkedin card preview/i)).not.toBeInTheDocument();
+  });
+
+  it('a LinkedIn + X text post with a link keeps the card (LinkedIn still builds it)', () => {
+    render(<PostPreview post={{ type: 'text', platforms: ['x', 'linkedin'], title: 'Hello', link }} />);
+    expect(screen.getByText(/linkedin card preview/i)).toBeInTheDocument();
+  });
+});

@@ -119,6 +119,26 @@ try {
     row = radarRow(masto.RUN);
     ok(row && row.ok === false && row.error === 'needs_scope' && row.scope === 'read:search', 'mastodon: 401 on the first term with nothing collected => needs_scope read:search');
     ok(urls.filter(isSearch).length === 1, 'mastodon: the 401 breaks the loop (every further keyword would 401 too)');
+
+    // 2026-09-25: a federated long-form object (a blog post relayed as a status, 5k-76k chars)
+    // is not a conversation. The adapter drops it before the seam ever scores it; a normal
+    // status next to it is kept. Hashtag timelines get the same filter.
+    const { RADAR_LONGFORM_CHARS } = await import('../lib/radar.mjs');
+    const longBody = `<p>${'A long essay paragraph about gardens and weather. '.repeat(Math.ceil((RADAR_LONGFORM_CHARS + 500) / 50))}</p>`;
+    masto.RUN.results.length = 0;
+    stubFetch({ isSearch: (u) => u.includes('/api/v2/search') || u.includes('/timelines/tag/'), answers: [
+      { body: { statuses: [status('short1'), { ...status('blog1'), content: longBody }] } },
+      { body: [{ ...status('blog2'), content: longBody }, status('short2')] },
+    ] });
+    await masto.cmdRadar({ query: JSON.stringify({ keywords: ['alpha'], hashtags: ['beta'] }) });
+    row = radarRow(masto.RUN);
+    ok(row && row.ok === true && row.items.map((it) => it.externalId).sort().join(',') === 'short1,short2', `mastodon: long-form federated posts are dropped, conversations kept (got ${row && row.items.map((it) => it.externalId).join(',')})`);
+    // &nbsp; in federated HTML decodes to a plain space (it leaked into stored text before).
+    masto.RUN.results.length = 0;
+    stubFetch({ isSearch, answers: [{ body: { statuses: [{ ...status('nb1'), content: '<p>Grocery&nbsp;Routine</p>' }] } }] });
+    await masto.cmdRadar({ query: JSON.stringify({ keywords: ['alpha'] }) });
+    row = radarRow(masto.RUN);
+    ok(row && row.items[0] && row.items[0].text === 'Grocery Routine', `mastodon: &nbsp; decodes to a space (got ${row && row.items[0] && JSON.stringify(row.items[0].text)})`);
   }
 
   // ============================ Bluesky ============================
@@ -194,6 +214,21 @@ try {
     ok(row && row.ok === false && row.error === 'engine_failure' && /502/.test(row.message), `bluesky: every term erroring => engine_failure with the last error (got ${row && row.error} ${row && row.message})`);
   }
 
+  // ============================ Bluesky lang ============================
+  {
+    const de = new URL(bsky.bskySearchUrl('https://pds.example', 'coaching software', 'de-CH'));
+    ok(de.pathname === '/xrpc/app.bsky.feed.searchPosts' && de.searchParams.get('q') === 'coaching software' && de.searchParams.get('lang') === 'de', `bluesky: a lang:de-CH query searches with lang=de (${de.search})`);
+    const any = new URL(bsky.bskySearchUrl('https://pds.example', 'coaching software', undefined));
+    ok(!any.searchParams.has('lang'), 'bluesky: a query without lang sends no lang filter');
+    ok(!new URL(bsky.bskySearchUrl('https://pds.example', 'x', 'not a lang!')).searchParams.has('lang'), 'bluesky: a malformed lang is never sent');
+    const isSearch = (u) => u.includes('searchPosts');
+    bsky.RUN.results.length = 0;
+    const urls = stubFetch({ isSearch, session: { accessJwt: 'jwt-1' }, answers: [{ body: { posts: [] } }] });
+    await bsky.cmdRadar({ query: JSON.stringify({ keywords: ['coaching'], lang: 'fr' }) });
+    const sent = urls.filter(isSearch);
+    ok(sent.length === 1 && paramOf(sent[0], 'lang') === 'fr', `bluesky: cmdRadar forwards the query lang to searchPosts (${sent.map((u) => paramOf(u, 'lang')).join(',')})`);
+  }
+
   // ============================ Hacker News ============================
   {
     const isSearch = (u) => u.includes('hn.algolia.com');
@@ -209,7 +244,11 @@ try {
     await hn.cmdRadar({ query: q3 });
     let searches = urls.filter(isSearch);
     ok(searches.length === 3, `hn: 3 keywords => 3 Algolia requests (got ${searches.length})`);
-    ok(searches.every((u, i) => paramOf(u, 'query') === KW[i]), `hn: each Algolia query carries exactly one keyword (${searches.map((u) => paramOf(u, 'query')).join(',')})`);
+    ok(searches.every((u, i) => paramOf(u, 'query') === `"${KW[i]}"`), `hn: each Algolia query carries exactly one keyword, as a quoted phrase (${searches.map((u) => paramOf(u, 'query')).join(',')})`);
+    ok(searches.every((u) => paramOf(u, 'typoTolerance') === 'false' && paramOf(u, 'advancedSyntax') === 'true'), 'hn: every Algolia query turns typo tolerance off and the phrase syntax on (no "bexio" -> "Benioff")');
+    const built = new URL(hn.hnSearchUrl('self "hosted"  scheduler'));
+    ok(built.searchParams.get('query') === '"self hosted scheduler"' && built.searchParams.get('typoTolerance') === 'false' && built.searchParams.get('advancedSyntax') === 'true' && built.searchParams.get('tags') === '(story,comment)',
+      `hn: hnSearchUrl sends one clean quoted phrase (${built.searchParams.get('query')})`);
     let row = radarRow(hn.RUN);
     ok(row && row.ok === true && row.items.length === 3, `hn: the hit two searches both returned appears once (${row && row.items.length} items)`);
 
@@ -236,7 +275,7 @@ try {
     urls = stubFetch({ isSearch, answers: [{ body: { hits: [hit('h7')] } }] });
     await hn.cmdRadar({ query: JSON.stringify({ label: 'pendpost radar' }) });
     searches = urls.filter(isSearch);
-    ok(searches.length === 1 && paramOf(searches[0], 'query') === 'pendpost radar', `hn: no keywords + label => ONE search with the label (got ${searches.map((u) => paramOf(u, 'query')).join('|')})`);
+    ok(searches.length === 1 && paramOf(searches[0], 'query') === '"pendpost radar"', `hn: no keywords + label => ONE search with the label (got ${searches.map((u) => paramOf(u, 'query')).join('|')})`);
     row = radarRow(hn.RUN);
     ok(row && row.ok === true && row.items.length === 1, 'hn: the label search returns its items');
 

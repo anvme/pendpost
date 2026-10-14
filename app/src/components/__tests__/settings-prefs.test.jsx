@@ -119,7 +119,10 @@ describe('Settings public media host (spec 39 §4.0)', () => {
     const field = screen.getByLabelText('Public media host');
     await user.type(field, 'notaurl');
     await user.tab();
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/publicMediaBaseUrl must be an absolute/));
+    // The inline line is one plain sentence; the server's English rule rides the "?" only.
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Please enter a full http(s) address.'));
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/publicMediaBaseUrl/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription(/publicMediaBaseUrl must be an absolute/);
     expect(field).toHaveValue('');
   });
 });
@@ -135,4 +138,38 @@ it('no longer stacks the standalone Publishing automation card on the preference
   expect(screen.queryByRole('heading', { name: /publishing automation/i })).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Approval expiry')).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Slot slip')).not.toBeInTheDocument();
+});
+
+// The raw-error sweep: a failed save is one plain sentence, never the server's English line
+// inline (that rides the house "?"), and a message-less rejection still leaves the sentence.
+describe('Settings save failures speak a plain sentence', () => {
+  it('a message-less language write rejection still shows the plain sentence', async () => {
+    saveConfig.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderSettings();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Language' }), 'de-CH');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save. Reload and try again.');
+  });
+
+  it('an English server error is not inline; it is the "?" description', async () => {
+    saveConfig.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderSettings();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Language' }), 'de-CH');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not save. Reload and try again.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a time zone the server refuses reads the plain field sentence, the rule rides the "?"', async () => {
+    saveConfig.mockRejectedValueOnce(Object.assign(new Error('defaultTimezone must be a valid IANA timezone'), { code: 'invalid_input' }));
+    const user = userEvent.setup();
+    renderSettings();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Time zone' }), 'America/New_York');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Not a valid timezone. Use an IANA name like Europe/Zurich.');
+    expect(alert).not.toHaveTextContent(/defaultTimezone/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('defaultTimezone must be a valid IANA timezone');
+  });
 });

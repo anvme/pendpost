@@ -6,7 +6,7 @@ import { useT, useLocale, useSetLocale, useAdoptLocale, hasStoredLocale } from '
 import { applyAccent, clientAccent, DEFAULT_ACCENT } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
 import { useCloud, useCloudClients, useInvalidateCloud } from './lib/cloud.js';
-import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, isLate, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable, getPlannerDensity, setPlannerDensity } from './lib/format.js';
+import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, attentionSummary, isLate, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable, getPlannerDensity, setPlannerDensity } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
 import { useConfirm } from './components/ui/confirm.jsx';
@@ -17,7 +17,7 @@ import Sidebar from './components/Sidebar.jsx';
 import SidebarResizer from './components/SidebarResizer.jsx';
 import UpdateToast from './components/UpdateToast.jsx';
 import HumanizerReceipt from './components/HumanizerReceipt.jsx';
-import AppToast from './components/AppToast.jsx';
+import AppToast, { showToast } from './components/AppToast.jsx';
 import DevReadonlyBadge from './components/DevReadonlyBadge.jsx';
 import { WeekView, MonthView, ListView } from './components/Planner.jsx';
 import PostDetail from './components/PostDetail.jsx';
@@ -39,6 +39,7 @@ import ReadinessChecklist from './components/ReadinessChecklist.jsx';
 import PlannerRunNow from './components/PlannerRunNow.jsx';
 import ActivityCheckNow from './components/ActivityCheckNow.jsx';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
+import { TAP_TARGET, TAP_TARGET_Y } from './components/ui/recipes.js';
 import DeliveryExplainer from './components/DeliveryExplainer.jsx';
 
 // Routable pages (hash-synced); composer/assets are still contextual overlays.
@@ -102,7 +103,11 @@ export default function App() {
     () => (clientsData?.clients || []).filter((c) => (c.status || 'active') === 'active' && !c.isDormantDefault),
     [clientsData],
   );
-  const plansAllQueries = usePlansAll(allClientsList, allClients);
+  // The fan-out also runs outside the mode whenever there is more than one project:
+  // the attention chip and beacon read every project (see crossPosts below). The
+  // Clients page runs this same fan-out, and react-query shares the ['plans', id]
+  // cache, so it costs nothing extra there.
+  const plansAllQueries = usePlansAll(allClientsList, allClients || allClientsList.length > 1);
   // One quiet inline notice per client whose plans read failed - never blocks the
   // rest of the merged list. Each entry keeps its own refetch so "try again" only
   // retries that one client's query.
@@ -232,7 +237,12 @@ export default function App() {
     }
   }, [cloudLaunch.any, cloudLaunch.paramsPresent]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [view, setView] = useState('week');
+  // D3: a phone opens the planner on the List (seven readable day columns cannot fit
+  // 341px); wider screens keep Week. Not persisted, and the switcher is unchanged, so Week
+  // and Month stay one tap away. jsdom has no matchMedia, hence the guard.
+  const [view, setView] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 639px)').matches ? 'list' : 'week'
+  ));
   // Week-view card density (comfortable big cards vs compact chips). A persisted
   // display preference (getPlannerDensity/setPlannerDensity mirror the card-accent
   // idiom); the local state bump re-renders the board, like Settings#cardAccent.
@@ -343,7 +353,7 @@ export default function App() {
   // "pendpost - <client> - <page>", so the operator always knows the client.
   useEffect(() => {
     const clientName = activeClient?.displayName;
-    document.title = ['pendpost', clientName, t(PAGE_TITLE_KEYS[page] || page)].filter(Boolean).join(' - ');
+    document.title = ['pendpost', clientName, t(PAGE_TITLE_KEYS[page] || page)].filter(Boolean).join(' · ');
   }, [activeClient?.displayName, page, t]);
 
   // Issue 6: the ONE campaigns list every downstream derivation reads. Off, it is
@@ -351,9 +361,9 @@ export default function App() {
   // per-client read, with clientId/clientName/accent stamped onto each campaign
   // AND each of its posts (issue 6 step 2) - Freigaben/Planner/Sidebar counts all
   // read this one array unchanged, so the mode reuses every existing derivation
-  // instead of forking a second code path.
-  const campaigns = useMemo(() => {
-    if (!allClients) return plansData?.campaigns || [];
+  // instead of forking a second code path. The merge itself is computed in both
+  // modes: the attention chip reads it even while one project is in view.
+  const mergedCampaigns = useMemo(() => {
     const merged = [];
     plansAllQueries.forEach((q, i) => {
       const client = allClientsList[i];
@@ -370,7 +380,11 @@ export default function App() {
       }
     });
     return merged;
-  }, [allClients, plansData, plansAllQueries, allClientsList]);
+  }, [plansAllQueries, allClientsList]);
+  const campaigns = useMemo(
+    () => (allClients ? mergedCampaigns : plansData?.campaigns || []),
+    [allClients, mergedCampaigns, plansData],
+  );
   // Radar "all projects" overview (issue 6 for the radar feed): the same fan-out
   // the planner/approvals use, but only the SIGNAL FEED merges - the per-client
   // control/summary strips (scan, jobs, GEO, next/last scan) stay single-client
@@ -575,7 +589,16 @@ export default function App() {
   // predicate the 'overdue' status filter uses (format.js matchesFilters), so this count
   // and the list the Ueberfaellig chip opens are the same set by construction - the
   // banner can never sit above an empty list again.
-  const overdueCount = useMemo(() => activePosts.filter(isLate).length, [activePosts]);
+  // The chip and the beacon take their WORD from the card's display state (attentionSummary):
+  // a post waiting on the operator reads "Wartet auf dich" there too, never "Überfällig".
+  // Every project's late posts, not just the viewed one: a failed reel in a project the
+  // operator is not viewing must still light the chip (2026-09-29, seen on a client project).
+  // Same predicate as Clients.jsx's per-project signal, over the same fan-out. While the
+  // fan-out loads (or with one project) crossPosts is empty and the chip falls back to
+  // the viewed project's posts, so it never flickers to zero.
+  const crossPosts = useMemo(() => mergedCampaigns.filter((c) => !c.internal).flatMap((c) => c.posts || []), [mergedCampaigns]);
+  const attention = useMemo(() => attentionSummary(crossPosts.length ? crossPosts : activePosts), [crossPosts, activePosts]);
+  const attentionTip = attention ? t(attention.kind === 'needs-you' ? 'header.needsYou.tip' : 'header.overdue.tip', { count: attention.count }) : '';
   const nextPost = useMemo(() => {
     const now = Date.now();
     return activePosts
@@ -723,12 +746,36 @@ export default function App() {
   // page opens with the create form already showing, then consumes the flag.
   const [clientsCreateIntent, setClientsCreateIntent] = useState(false);
   // The sidebar "Overdue" button jumps to the chronological list, filtered
-  // to overdue, so the owner lands on exactly what needs attention.
+  // to overdue, so the owner lands on exactly what needs attention. The chip counts
+  // every project, so a late post in another project opens the all-projects scope
+  // (which already names each post's project) instead of an empty single-project list.
   const showOverdue = () => {
+    if (!allClients && crossPosts.some((p) => p.clientId !== activeClientId && isLate(p))) setAllClients(true);
     setStatusFilter(['overdue']);
     setView('list');
     setCampaignFilter('all');
     setPage('planner');
+  };
+  // The one fix a cloud issue row offers (header popover + Cloud page): 'reconnect' opens
+  // Setup focused on that lane, 'open' opens the post. An issue can belong to a project the
+  // owner is not viewing (the roll-up spans every always-on project), so re-scope first via
+  // the same guarded switch the sidebar and palette use - never over a dirty draft.
+  const onCloudIssue = async (issue, action) => {
+    if (!issue) return;
+    if (issue.clientId && issue.clientId !== activeClientId) {
+      if (!(await guardClientSwitch())) return;
+      try {
+        await setActiveClient(issue.clientId);
+        // The issue belongs to another project, so acting on it re-scopes the Studio. Say
+        // so with the switcher's own words and the shared toast, never silently.
+        showToast({ text: t('clientSwitcher.switched', { name: issue.clientName || issue.clientId }) });
+      } catch { /* best-effort; act in whatever project ends up active */ }
+    }
+    if (action === 'reconnect') navigateTo('setup', issue.lane);
+    else if (action === 'open' && issue.campaign && issue.postId) {
+      setSelectedKey({ campaign: issue.campaign, id: issue.postId });
+      setTriageKeys(null);
+    }
   };
 
   // Drag-drop reschedule: same wall-clock time, new day. moveToDayTarget refuses
@@ -811,7 +858,7 @@ export default function App() {
             posting={posting}
             pendingCount={pendingCount}
             nextPost={nextPost}
-            overdueCount={overdueCount}
+            attention={attention}
             setupReady={pendpostHealth?.setup?.ready}
             setupIncomplete={setupAttentionCount(pendpostHealth?.setup)}
             activePage={page}
@@ -833,7 +880,14 @@ export default function App() {
 
           <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto scrollbar-soft">
             {page !== 'composer' ? (
-            <header className="glass-panel flex items-center gap-2 rounded-2xl px-4 py-3">
+            // Below sm the header WRAPS (title row, then the icon row right-aligned): at
+            // 375px the planner's controls overran one line, so the menu button and the
+            // theme toggle were clipped and opening the cloud popover scrolled the page
+            // sideways. Desktop keeps its single line.
+            // gap-3, not gap-2: the menu button and the planner's back button each carry a 44px
+            // TAP_TARGET box on a 32px button, and two such boxes only stay apart at 12px - across
+            // (menu -> back below lg) and down (the wrapped title row -> control row on a phone).
+            <header className="glass-panel flex items-center gap-3 rounded-2xl px-4 py-3 max-sm:flex-wrap">
               {/* Narrow-only trigger for the off-canvas sidebar drawer; hidden on
                   the lg+ rail. Controls the #app-sidebar drawer. */}
               <button
@@ -842,22 +896,24 @@ export default function App() {
                 aria-label={t('app.nav.openMenu')}
                 aria-expanded={sidebarOpen}
                 aria-controls="app-sidebar"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand lg:hidden"
+                className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand lg:hidden`}
               >
                 <Menu size={18} aria-hidden="true" />
               </button>
               {page === 'planner' ? (
-                <div className="flex min-w-0 shrink-0 items-center gap-1">
-                  <button type="button" onClick={() => navigate(-1)} aria-label={t('app.cal.back')} className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand">
+                // gap-1.5: Zurück/Weiter (32px) reach 6px past each side to their 44px box; Heute is
+                // already 55px wide, so 6px between them is exactly where the boxes meet.
+                <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+                  <button type="button" onClick={() => navigate(-1)} aria-label={t('app.cal.back')} className={`${TAP_TARGET} flex h-8 w-8 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand`}>
                     <ChevronLeft size={16} aria-hidden="true" />
                   </button>
-                  <button type="button" onClick={goToday} className="flex h-8 items-center rounded-xl px-2.5 text-xs font-bold transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand">
+                  <button type="button" onClick={goToday} className={`${TAP_TARGET} flex h-8 items-center rounded-xl px-2 text-xs font-bold transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand`}>
                     {t('app.cal.today')}
                   </button>
-                  <button type="button" onClick={() => navigate(1)} aria-label={t('app.cal.next')} className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand">
+                  <button type="button" onClick={() => navigate(1)} aria-label={t('app.cal.next')} className={`${TAP_TARGET} flex h-8 w-8 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand`}>
                     <ChevronRight size={16} aria-hidden="true" />
                   </button>
-                  <h1 className="ml-1 whitespace-nowrap font-display text-base font-bold">
+                  <h1 className="whitespace-nowrap font-display text-base font-bold">
                     {view === 'list' ? (
                       t('approvals.view.all')
                     ) : (
@@ -869,10 +925,12 @@ export default function App() {
                   </h1>
                 </div>
               ) : (
-                <h1 className="font-display text-base font-bold">{pageTitle(page)}</h1>
+                <h1 className="min-w-0 truncate font-display text-base font-bold">{pageTitle(page)}</h1>
               )}
 
-              <div className="ml-auto flex min-w-0 items-center gap-2">
+              {/* max-sm:gap-y-3: on a phone this cluster wraps into rows of 32px buttons with 44px
+                  boxes, which only clear each other 12px apart. */}
+              <div className="ml-auto flex min-w-0 items-center gap-2 max-sm:flex-wrap max-sm:justify-end max-sm:gap-y-3">
                 {/* The active client is named by the always-visible sidebar
                     ClientSwitcher (and Cmd-K); on the base shell the header no
                     longer repeats it. The per-client ClientBand signage lives in
@@ -905,7 +963,8 @@ export default function App() {
                           type="button"
                           onClick={() => setView(key)}
                           aria-label={label}
-                          className={`flex h-full items-center gap-1.5 rounded-[10px] px-2.5 text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-brand ${
+                          aria-pressed={view === key}
+                          className={`${TAP_TARGET_Y} flex h-full min-w-11 items-center justify-center gap-1.5 rounded-[10px] px-2.5 text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-brand ${
                             view === key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
                           }`}
                         >
@@ -928,7 +987,7 @@ export default function App() {
                           }}
                           aria-pressed={density === 'compact'}
                           aria-label={t(density === 'compact' ? 'app.density.toComfortable' : 'app.density.toCompact')}
-                          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand ${
+                          className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand ${
                             density === 'compact' ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
                           }`}
                         >
@@ -939,11 +998,15 @@ export default function App() {
                     <label className="sr-only" htmlFor="campaign-filter">
                       {t('app.campaign.label')}
                     </label>
+                    {/* A native select cannot carry the ::after TAP_TARGET box, so the select
+                        itself is the 44px target (transparent, pulled back into the 32px row by
+                        -my-1.5) and this span paints the 32px pill and its focus ring. */}
+                    <span className="flex h-8 min-w-0 max-w-[10rem] items-center rounded-xl bg-zinc-200/60 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-brand dark:bg-zinc-800/60">
                     <select
                       id="campaign-filter"
                       value={campaignFilter}
                       onChange={(e) => setCampaignFilter(e.target.value)}
-                      className="h-8 min-w-0 max-w-[10rem] rounded-xl border-0 bg-zinc-200/60 px-2.5 text-xs font-bold text-zinc-700 focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:text-zinc-200"
+                      className="-my-1.5 h-11 min-w-11 max-w-full border-0 bg-transparent px-2.5 text-xs font-bold text-zinc-700 focus-visible:outline-none dark:text-zinc-200"
                     >
                       {/* Native <option> ignores the dark: utilities below in some
                           browsers (the OS renders the popup list) - a known
@@ -960,6 +1023,7 @@ export default function App() {
                         </option>
                       ))}
                     </select>
+                    </span>
                     {/* Per-campaign internal flag: hide a scoped validation/test
                         campaign from the operator views (or bring it back). */}
                     {pickedCampaign ? (
@@ -995,44 +1059,50 @@ export default function App() {
                     SchedulerChip): a persistent symbol next to the language/theme
                     toggles whose popover folds the keep-open status and the managed
                     cloud upsell. Present on every page. */}
-                {/* Overdue beacon: present ONLY while something is past due - a red
-                    count in the persistent icon row (the sidebar chip is out of
-                    view on small screens / collapsed sidebars). Click = the same
-                    overdue jump the sidebar chip performs. */}
-                {overdueCount > 0 ? (
-                  <Tip label={t('header.overdue.tip', { count: overdueCount })}>
+                {/* The persistent icon cluster. Each 32px button carries a 44px TAP_TARGET box; gap-3
+                    (12px) is the spacing at which two such boxes meet without overlapping. */}
+                <div className="flex shrink-0 items-center gap-3">
+                  {/* Overdue beacon: present ONLY while something is past due - a red
+                      count in the persistent icon row (the sidebar chip is out of
+                      view on small screens / collapsed sidebars). Click = the same
+                      overdue jump the sidebar chip performs. */}
+                  {attention ? (
+                    <Tip label={attentionTip}>
+                      <button
+                        type="button"
+                        onClick={showOverdue}
+                        aria-label={attentionTip}
+                        className={`${TAP_TARGET} flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-red-500/10 px-2.5 text-red-600 ring-1 ring-red-500/40 transition hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-red-400`}
+                      >
+                        <TriangleAlert size={14} aria-hidden="true" />
+                        <span className="text-xs font-bold tabular-nums">{attention.count}</span>
+                      </button>
+                    </Tip>
+                  ) : null}
+                  <ConnectionStatus running={accounts?.scheduler?.running} onNavigate={setPage} onShowAtRisk={showOverdue} onIssueAction={onCloudIssue} />
+                  {/* Hidden on a phone: at 375px the icon row overran the header and clipped the
+                      theme button. The language stays one tap away in Settings. */}
+                  <Tip label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}>
                     <button
                       type="button"
-                      onClick={showOverdue}
-                      aria-label={t('header.overdue.tip', { count: overdueCount })}
-                      className="flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-red-500/10 px-2.5 text-red-600 ring-1 ring-red-500/40 transition hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-red-400"
+                      onClick={() => setLocale(locale === 'de-CH' ? 'en' : 'de-CH')}
+                      aria-label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}
+                      className={`${TAP_TARGET} hidden h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand sm:flex`}
                     >
-                      <TriangleAlert size={14} aria-hidden="true" />
-                      <span className="text-xs font-bold tabular-nums">{overdueCount}</span>
+                      <Languages size={14} aria-hidden="true" />
                     </button>
                   </Tip>
-                ) : null}
-                <ConnectionStatus running={accounts?.scheduler?.running} onNavigate={setPage} onShowAtRisk={showOverdue} />
-                <Tip label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}>
-                  <button
-                    type="button"
-                    onClick={() => setLocale(locale === 'de-CH' ? 'en' : 'de-CH')}
-                    aria-label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand"
-                  >
-                    <Languages size={14} aria-hidden="true" />
-                  </button>
-                </Tip>
-                <Tip label={dark ? t('app.theme.toLight') : t('app.theme.toDark')}>
-                  <button
-                    type="button"
-                    onClick={toggleDark}
-                    aria-label={dark ? t('app.theme.toLight') : t('app.theme.toDark')}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand"
-                  >
-                    {dark ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
-                  </button>
-                </Tip>
+                  <Tip label={dark ? t('app.theme.toLight') : t('app.theme.toDark')}>
+                    <button
+                      type="button"
+                      onClick={toggleDark}
+                      aria-label={dark ? t('app.theme.toLight') : t('app.theme.toDark')}
+                      className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand`}
+                    >
+                      {dark ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
+                    </button>
+                  </Tip>
+                </div>
               </div>
             </header>
             ) : null}
@@ -1180,7 +1250,16 @@ export default function App() {
                 then remembered. Teaches the model the chip only hints at. */}
             {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} suppressed={activeOnCloud} /> : null}
 
-            <div className="glass-panel flex min-h-0 flex-1 flex-col overflow-auto rounded-2xl p-4">
+            {/* The content canvas GROWS with its content; <main> above is the one vertical
+                scroller, so the header and filter bar scroll away with the page (owner rule:
+                never a fixed header over a cramped inner scroll box). `grow` keeps a short page
+                filling the viewport (the goal of 45c4e0f2, which got there by capping the height
+                and scrolling inside - the rejected model); `shrink-0` stops the cap coming back.
+                overflow-x-CLIP, not -auto: clip is no scroll container, so a `sticky` child
+                (the Freigaben bulk bar, the Composer preview) pins to <main>, and nothing wide
+                can scroll the page sideways. The week/month grids scroll sideways in their own
+                wrapper below. */}
+            <div className="glass-panel flex shrink-0 grow flex-col overflow-x-clip rounded-2xl p-4">
               {/* The at-risk strip is GONE. It only ever appeared once the owner had
                   already filtered to overdue, so it restated the filter they had just
                   chosen; it carried no control (two <p> tags); its count already lives in
@@ -1221,6 +1300,7 @@ export default function App() {
                   onReturnDismiss={() => setCloudReturn(false)}
                   deepLinkPlan={cloudLaunch.plan}
                   deepLinkInterval={cloudLaunch.interval}
+                  onIssueAction={onCloudIssue}
                 />
               ) : page === 'radar' ? (
                 <Radar active={page === 'radar'} campaigns={campaigns} allClients={radarAll} allSignals={radarAllSignals} allFailed={radarAllFailed} allLoading={radarAllLoading} allInbox={radarInboxAll} allInboxFailed={radarInboxAllFailed} allInboxLoading={radarInboxAllLoading} onNavigate={navigateTo} onNewPost={openComposer} onOpenPost={openPost} />
@@ -1255,10 +1335,17 @@ export default function App() {
                 // First-run / genuinely empty workspace (US-ONB-03): welcome +
                 // mock framing + create-first-campaign, even under a manifest error.
                 <FirstRunEmptyState onNavigate={setPage} />
-              ) : view === 'week' ? (
-                <WeekView posts={posts} weekStart={weekStart} onSelect={openPost} onEdit={editComposer} onMoveToDay={moveToDay} loading={isLoading} lane={lane} density={density} />
-              ) : view === 'month' ? (
-                <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} onMoveToDay={moveToDay} loading={isLoading} lane={lane} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
+              ) : view === 'week' || view === 'month' ? (
+                // The 7-column grid is 840px wide at minimum, so on a narrow screen it (and only
+                // it) scrolls sideways. -m-4 p-4 hands it the canvas padding as room for the card
+                // hover lift and focus rings; it never caps its height, so it never scrolls down.
+                <div className="-m-4 overflow-x-auto rounded-2xl p-4">
+                  {view === 'week' ? (
+                    <WeekView posts={posts} weekStart={weekStart} onSelect={openPost} onEdit={editComposer} onMoveToDay={moveToDay} loading={isLoading} lane={lane} density={density} />
+                  ) : (
+                    <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} onMoveToDay={moveToDay} loading={isLoading} lane={lane} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
+                  )}
+                </div>
               ) : (
                 <ListView posts={posts} onSelect={openPost} onEdit={editComposer} loading={isLoading} showAllDays={statusFilter.length > 0} />
               )}

@@ -66,7 +66,7 @@ function StickerChip({ sticker }) {
       return (
         <span className={CHIP}>
           <Music size={11} aria-hidden="true" />
-          {[sticker.title, sticker.artist].filter(Boolean).join(' - ') || t('ui.story.sticker.music')}
+          {[sticker.title, sticker.artist].filter(Boolean).join(' · ') || t('ui.story.sticker.music')}
         </span>
       );
     default:

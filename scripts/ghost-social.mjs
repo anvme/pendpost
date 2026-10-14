@@ -117,7 +117,7 @@ import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
-import { envPath, parseCsvRows } from '../lib/util.mjs';
+import { envPath, parseCsvRows, describeFetchFailure } from '../lib/util.mjs';
 import { mdToHtml } from '../lib/markdown.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 
@@ -790,7 +790,7 @@ async function cmdInsights(args) {
       RUN.results.push({ postId: post.id, platform: 'ghost', action: 'insights', ok: true, id: post.ghostPostId, metrics });
       console.log(`[ok] ${post.id}: Ghost ${JSON.stringify(metrics)}`);
     } catch (err) {
-      RUN.results.push({ postId: post.id, platform: 'ghost', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300), id: post.ghostPostId });
+      RUN.results.push({ postId: post.id, platform: 'ghost', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300), id: post.ghostPostId });
       console.error(`[err] ${post.id}: ghost insights failed - ${err.message}`);
     }
   }
@@ -1202,7 +1202,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }

@@ -25,6 +25,7 @@ const youtubeUpdateProfileMock = vi.fn(() => Promise.resolve({ ok: true, results
 vi.mock('../../lib/api.js', () => ({
   // WP6: Setup reads the radar capability table for the per-card scan switch
   useSignals: () => ({ data: undefined, isLoading: false }),
+  usePlans: () => ({ data: undefined }),
   usePendpostHealth: () => ({
     data: {
       ok: true, ready: false,
@@ -178,14 +179,30 @@ describe('Setup — cross-lane profile edit (spec 28)', () => {
     await waitFor(() => expect(youtubeUpdateProfileMock).toHaveBeenCalledWith({ keywords: 'a, b, c' }));
   });
 
-  it('Check access calls the same twin with probe:true and renders a permitted tier detail', async () => {
+  it('Check access calls the same twin with probe:true; a pass with no identity says so plainly, the engine line behind the "?"', async () => {
     mastodonUpdateProfileMock.mockResolvedValueOnce({ ok: true, results: [{ platform: 'mastodon', action: 'profile-probe', ok: true, tier: 'permitted', detail: 'authenticated as @owner' }] });
     const user = userEvent.setup();
     renderSetup();
     const region = await expandProfilePanel(user, 'Mastodon');
     await user.click(within(region).getByRole('button', { name: 'Check access' }));
     await waitFor(() => expect(mastodonUpdateProfileMock).toHaveBeenCalledWith({ probe: true }));
-    expect(await within(region).findByText('authenticated as @owner')).toBeInTheDocument();
+    expect(await within(region).findByText('Access works. You can edit this profile here.')).toBeInTheDocument();
+    expect(within(region).getByText('authenticated as @owner')).toHaveClass('sr-only');
+  });
+
+  // Telegram's probe carries no discrete identity field, only an English engine line.
+  // That line never shows inline: the plain sentence does, the line rides the "?".
+  it('a Telegram probe with no identity shows the plain sentence, never the raw English line', async () => {
+    telegramUpdateProfileMock.mockResolvedValueOnce({ ok: true, results: [{ platform: 'telegram', action: 'profile-probe', ok: true, tier: 'permitted', detail: '@acme_bot is admin on Acme News' }] });
+    const user = userEvent.setup();
+    renderSetup();
+    const region = await expandProfilePanel(user, 'Telegram');
+    await user.click(within(region).getByRole('button', { name: 'Check access' }));
+    expect(await within(region).findByText('Access works. You can edit this profile here.')).toBeInTheDocument();
+    expect(within(region).getByText('@acme_bot is admin on Acme News')).toHaveClass('sr-only');
+    const visible = region.cloneNode(true);
+    visible.querySelectorAll('.sr-only').forEach((n) => n.remove());
+    expect(visible.textContent).not.toMatch(/is admin on/);
   });
 
   // Spec 28 addendum: the probe's discrete identity field renders as the muted
@@ -219,20 +236,47 @@ describe('Setup — cross-lane profile edit (spec 28)', () => {
     renderSetup();
     const region = await expandProfilePanel(user, 'YouTube');
     await user.click(within(region).getByRole('button', { name: 'Check access' }));
-    expect(await within(region).findByText('The API is turned off in Google Cloud')).toBeInTheDocument();
-    const link = within(region).getByRole('link', { name: /enable the api in google cloud/i });
+    expect(await within(region).findByText('The service is turned off in Google Cloud')).toBeInTheDocument();
+    const link = within(region).getByRole('link', { name: /turn it on in google cloud/i });
     expect(link).toHaveAttribute('href', 'https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247');
     expect(within(region).queryByText('Authorize profile edit')).not.toBeInTheDocument();
   });
 
-  it('error state: a rejected Apply shows the server error message inline', async () => {
+  it('error state: a rejected Apply says one plain sentence; the server line only behind the "?"', async () => {
     youtubeUpdateProfileMock.mockRejectedValueOnce(Object.assign(new Error('refusing to edit profile: wrong channel'), { code: 'engine_failure' }));
     const user = userEvent.setup();
     renderSetup();
     const region = await expandProfilePanel(user, 'YouTube');
     await user.type(within(region).getByLabelText('Description'), 'new description');
     await user.click(within(region).getByRole('button', { name: 'Apply' }));
-    expect(await within(region).findByText('refusing to edit profile: wrong channel')).toBeInTheDocument();
+    expect((await within(region).findByRole('alert')).textContent).toBe('Could not update the profile.');
+    expect(within(region).getByText('refusing to edit profile: wrong channel')).toHaveClass('sr-only');
+  });
+
+  it('error state: a failure with no message says the plain sentence with no "?" detail', async () => {
+    youtubeUpdateProfileMock.mockRejectedValueOnce(new Error(''));
+    const user = userEvent.setup();
+    renderSetup();
+    const region = await expandProfilePanel(user, 'YouTube');
+    await user.type(within(region).getByLabelText('Description'), 'new description');
+    await user.click(within(region).getByRole('button', { name: 'Apply' }));
+    const alert = await within(region).findByRole('alert');
+    expect(alert.textContent).toBe('Could not update the profile.');
+    expect(within(alert.parentElement).queryByRole('button', { name: 'More about this' })).not.toBeInTheDocument();
+    expect(within(region).queryByText('Error')).not.toBeInTheDocument();
+  });
+
+  it('error state: an expired YouTube login on Apply names the fix, never the raw HTTP line', async () => {
+    youtubeUpdateProfileMock.mockRejectedValueOnce(new Error('youtube: PUT /channels: HTTP 401 - Unauthorized'));
+    const user = userEvent.setup();
+    renderSetup();
+    const region = await expandProfilePanel(user, 'YouTube');
+    await user.type(within(region).getByLabelText('Description'), 'new description');
+    await user.click(within(region).getByRole('button', { name: 'Apply' }));
+    expect((await within(region).findByRole('alert')).textContent).toBe('The connection has expired. Reconnect YouTube.');
+    const visible = region.cloneNode(true);
+    visible.querySelectorAll('.sr-only').forEach((n) => n.remove());
+    expect(visible.textContent).not.toMatch(/HTTP 401|PUT \/channels/);
   });
 
   it('is accessible with all four profile-edit panels expanded (axe clean)', async () => {

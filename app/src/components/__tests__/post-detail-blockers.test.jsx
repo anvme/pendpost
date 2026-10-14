@@ -203,7 +203,7 @@ describe('PostDetail platform-validate blocker rows', () => {
 
   it('does not restate the approval state in the platforms panel (header pill owns it)', () => {
     // A connected lane (no problems) on a draft post: the panel must NOT repeat the
-    // approval state - the header ApprovalPill ("Draft") is the single source. So the
+    // approval state - the header PostStatusPill ("Draft") is the single source. So the
     // blocker block does not render at all here.
     platformValidateState.data = {
       ok: true,
@@ -258,7 +258,7 @@ describe('PostDetail platform-validate blocker rows', () => {
     const onNavigate = vi.fn();
     renderDetail(basePost, onNavigate);
     // One actionable link, NOT the raw auth string.
-    const link = screen.getByRole('button', { name: 'Set up LinkedIn' });
+    const link = screen.getByRole('button', { name: 'Connect LinkedIn' });
     expect(link).toBeInTheDocument();
     expect(screen.queryByText('LinkedIn ist nicht verbunden')).not.toBeInTheDocument();
     link.click();
@@ -313,13 +313,26 @@ describe('PostDetail platform-validate blocker rows', () => {
     const textarea = screen.getByLabelText('Post text');
     expect(textarea.tagName).toBe('TEXTAREA');
     expect(textarea).toHaveValue('A caption');
-    // Save is the PERMANENT primary now: visible but disabled while clean.
-    expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+    // Minimal chrome: no Save at all while nothing changed (judge round 2 - a disabled
+    // "Save changes" sat in the footer of every clean post). It appears with the edit.
+    expect(screen.queryByRole('button', { name: /save changes/i })).not.toBeInTheDocument();
     await user.type(textarea, ' edited');
     const save = await screen.findByRole('button', { name: /save changes/i });
     expect(save).toBeEnabled();
     await user.click(save);
     expect(updatePost).toHaveBeenCalledWith('spring', 'p1', 1, { caption: 'A caption edited' });
+  });
+
+  it('undoing the edit hides Save again (it tracks the change, not the focus)', async () => {
+    const user = userEvent.setup();
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { instagram: { ready: true, problems: [], warnings: [] } } };
+    renderDetail();
+    const textarea = screen.getByLabelText('Post text');
+    await user.type(textarea, '!');
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument();
+    await user.type(textarea, '{Backspace}');
+    expect(textarea).toHaveValue('A caption');
+    expect(screen.queryByRole('button', { name: /save changes/i })).not.toBeInTheDocument();
   });
 
   it('drops the right column for a pure-text post (no link/image): single full-width body', () => {

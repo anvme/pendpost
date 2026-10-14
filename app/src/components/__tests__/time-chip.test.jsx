@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect } from 'vitest';
 import { TimeChip, MonthView } from '../Planner.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
@@ -10,7 +11,7 @@ import { timeChipTone, fmtTime } from '../../lib/format.js';
 
 // A fixed scheduled time so the rendered time string is deterministic in the
 // accessible name. The exact clock text is timezone-dependent, so the tests
-// assert on the tone prefix ("Approved - ", "Needs approval - ", "Halted - ").
+// assert on the tone prefix ("Approved, ", "Needs approval, ", "Halted, ").
 const AT = '2026-06-15T09:00:00.000Z';
 const post = (over = {}) => ({ scheduledAt: AT, approval: 'approved', platforms: ['instagram'], ...over });
 
@@ -61,17 +62,17 @@ describe('timeChipTone (FR1 precedence)', () => {
 describe('TimeChip accessible name (FR1, not color alone)', () => {
   it('renders an accessible name prefixed by the tone for an approved post', () => {
     renderChip(post({ approval: 'approved' }), {});
-    expect(screen.getByLabelText(/^Approved - /)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Approved, /)).toBeInTheDocument();
   });
 
-  it('renders "Needs approval - " for a draft post', () => {
+  it('renders "Needs approval, " for a draft post', () => {
     renderChip(post({ approval: 'draft' }), {});
-    expect(screen.getByLabelText(/^Needs approval - /)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Needs approval, /)).toBeInTheDocument();
   });
 
-  it('renders "Halted - " for a Meta post under a block', () => {
+  it('renders "Halted, " for a Meta post under a block', () => {
     renderChip(post({ approval: 'approved', platforms: ['instagram'] }), { metaBlockedUntil: AT });
-    expect(screen.getByLabelText(/^Halted - /)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Halted, /)).toBeInTheDocument();
   });
 
   // Round 2: the standalone variant is a non-interactive labeled span (role=img),
@@ -80,7 +81,7 @@ describe('TimeChip accessible name (FR1, not color alone)', () => {
   // depending on a pointer-only hover tooltip.
   it('renders the standalone variant as a labeled non-interactive span (role=img)', () => {
     renderChip(post({ approval: 'approved' }), {}, 'standalone');
-    const el = screen.getByLabelText(/^Approved - /);
+    const el = screen.getByLabelText(/^Approved, /);
     expect(el.tagName).toBe('SPAN');
     expect(el.getAttribute('role')).toBe('img');
     // No dead interactive element: the standalone chip is not a button.
@@ -92,7 +93,7 @@ describe('TimeChip accessible name (FR1, not color alone)', () => {
   // icon. The time still rides in the accessible name for screen readers.
   it('does not repeat the visible time text in the standalone chip', () => {
     renderChip(post({ approval: 'approved' }), {}, 'standalone');
-    const el = screen.getByLabelText(/^Approved - /);
+    const el = screen.getByLabelText(/^Approved, /);
     expect(el).toHaveTextContent('');
     expect(el.getAttribute('aria-label')).toContain(fmtTime(AT));
   });
@@ -116,9 +117,12 @@ describe('MonthView post button accessible name (findings 4 + 5)', () => {
   });
   const renderMonth = (posts) =>
     render(
-      <TooltipProvider>
-        <MonthView posts={posts} monthAnchor={new Date(AT)} onSelect={() => {}} loading={false} lane={{}} />
-      </TooltipProvider>,
+      // The month dot reads the cached health payload (the app always has a QueryClient).
+      <QueryClientProvider client={new QueryClient()}>
+        <TooltipProvider>
+          <MonthView posts={posts} monthAnchor={new Date(AT)} onSelect={() => {}} loading={false} lane={{}} />
+        </TooltipProvider>
+      </QueryClientProvider>,
     );
 
   it('names the post button from the day, title, and time', () => {

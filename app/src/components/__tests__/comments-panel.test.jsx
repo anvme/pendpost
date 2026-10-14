@@ -116,11 +116,46 @@ describe('CommentsPanel (spec 02 inbox seam)', () => {
     // surfaces ok:false + code + message; the panel shows the error affordance.
     commentsData = { ok: false, code: 'engine_failure', error: 'rate limited', message: 'rate limited', items: [], platform: 'telegram', targetPlatform: 'telegram', postId: 'p1' };
     renderPanel();
-    expect(screen.getByText(/could not load comments/i)).toBeInTheDocument();
-    expect(screen.getByText('rate limited')).toBeInTheDocument();
-    expect(screen.getByText('engine_failure')).toBeInTheDocument();
+    // One plain sentence names what happened; the raw engine line and code ride the "?" only.
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Telegram reported too many requests in a short time. It works again later.');
+    expect(alert).not.toHaveTextContent(/rate limited|engine_failure/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('rate limited · engine_failure');
     // It must NOT masquerade as the empty state.
     expect(screen.queryByText(/no comments yet/i)).not.toBeInTheDocument();
+  });
+
+  it('a lane read failure with nothing specific keeps the load sentence; the raw line rides the "?"', () => {
+    commentsData = { ok: false, error: 'HTTP 500 internal', items: [], platform: 'telegram', targetPlatform: 'telegram', postId: 'p1' };
+    renderPanel();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Could not load comments.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a failed reply says the plain sentence; the raw server line rides the "?" only', async () => {
+    replyMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getAllByRole('button', { name: /^reply$/i })[0]);
+    await user.type(screen.getByRole('textbox', { name: /reply/i }), 'thanks!');
+    await user.click(screen.getByRole('button', { name: /send/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not send the reply.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a message-less reply failure still leaves the plain sentence as the alert', async () => {
+    replyMock.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getAllByRole('button', { name: /^reply$/i })[0]);
+    await user.type(screen.getByRole('textbox', { name: /reply/i }), 'thanks!');
+    await user.click(screen.getByRole('button', { name: /send/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not send the reply.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
   });
 
   it('shows the loading skeleton while the read is pending', () => {

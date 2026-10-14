@@ -332,24 +332,20 @@ describe('Activity error remediation', () => {
       { ts: '2026-06-16T09:00:00.000Z', action: 'profile-update', ok: false, platform: 'youtube', error: 'api_disabled', errorMessage: 'YouTube Data API has not been used in project 449370365247 before or it is disabled.', helpUrl: 'https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247' },
     ];
     renderActivity({ onNavigate });
-    await user.click(screen.getByRole('button', { name: /enable the api/i }));
+    await user.click(screen.getByRole('button', { name: /turn on in google cloud/i }));
     expect(openSpy).toHaveBeenCalledWith('https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247', '_blank', 'noopener,noreferrer');
     expect(onNavigate).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });
 
-  it('the daily "youtube api_disabled" sweep summary routes to the console (generic fallback, no helpUrl)', async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  it('the old aggregate "youtube api_disabled" sweep row is history: no stale fix button', () => {
+    // Per-lane insights rows (activity-insights-lane-rows.test.jsx) carry the
+    // "Turn on in Google Cloud" fix now; the pre-fix aggregate row reads neutral.
     feed.activity = [
       { ts: '2026-06-16T09:00:00.000Z', action: 'insights-fetch', ok: false, errorCode: 'engine_failure', errorMessage: '1 fetch(es) failed: youtube api_disabled', actor: 'pendpost' },
     ];
-    renderActivity({ onNavigate });
-    await user.click(screen.getByRole('button', { name: /enable the api/i }));
-    expect(openSpy).toHaveBeenCalledWith('https://console.cloud.google.com/apis/library', '_blank', 'noopener,noreferrer');
-    expect(onNavigate).not.toHaveBeenCalled();
-    openSpy.mockRestore();
+    renderActivity();
+    expect(screen.queryByRole('button', { name: /turn on in google cloud/i })).toBeNull();
   });
 });
 
@@ -363,12 +359,26 @@ describe('Activity system-noise default hiding (UX round 4)', () => {
     expect(screen.queryByText('Scheduler started')).not.toBeInTheDocument();
   });
 
+  it('shows the cloud-claim-wait hold in the DEFAULT feed, filed under publish like media-missing-defer', () => {
+    // The one row explaining why an acked post is late (the cloud has it and cannot
+    // answer the claim) is an ok:true defer. Filed under system it would be hidden by
+    // default, exactly the row the owner needs to see.
+    expect(ACTION_GROUPS.find((g) => g.key === 'publish').actions).toContain('cloud-claim-wait');
+    expect(ACTION_GROUPS.find((g) => g.key === 'system').actions).not.toContain('cloud-claim-wait');
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'cloud-claim-wait', ok: true, platform: 'meta', campaign: 'acme', postId: 'r1', errorMessage: 'the cloud already has this post' },
+    ];
+    renderActivity();
+    expect(screen.getByText('Waiting for the cloud')).toBeInTheDocument();
+  });
+
   it('always surfaces a FAILED system event, even by default', () => {
     feed.activity = [
       { ts: '2026-06-16T09:00:00.000Z', action: 'token-refresh', ok: false, platform: 'linkedin', errorMessage: 'expired' },
     ];
     renderActivity();
-    expect(screen.getByText(/expired/)).toBeInTheDocument();
+    // The failed row is there; its note is a plain sentence and the raw 'expired' rides the "?".
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('expired');
   });
 
   it('the reveal line names the hidden count and selects the System group', async () => {
@@ -394,5 +404,45 @@ describe('Activity system-noise default hiding (UX round 4)', () => {
     const row = screen.getByText('Reel published').closest('p');
     expect(row.textContent).toContain('Spring promo headline');
     expect(row.textContent).not.toContain('acme / r1');
+  });
+});
+
+// The raw-error sweep: a failed row's note is one plain sentence from failureCopy, never the
+// engine's English errorMessage inline. A row that is itself a button (it opens its post) holds
+// no nested "?"; the post detail it opens carries the failure's own "?". Any other failed row
+// keeps the raw line behind the house "?". Informational notes on a success stay as they are.
+describe('Activity failed-row notes speak a plain sentence', () => {
+  const visibleText = (re) => screen.queryAllByText(re).filter((el) => !el.classList.contains('sr-only'));
+
+  it('a failed row without a post: the mapped sentence inline, the raw line only behind the "?"', () => {
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'token-refresh', ok: false, platform: 'linkedin', errorMessage: 'linkedin: POST /oauth/v2/accessToken: HTTP 401 unauthorized' },
+    ];
+    renderActivity();
+    // No post: a failed sign-in renewal reads its own plain sentence and points to Setup.
+    expect(screen.getByText('LinkedIn could not renew its sign-in. Reconnect in Setup.')).toBeInTheDocument();
+    expect(visibleText(/HTTP 401/)).toHaveLength(0);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('linkedin: POST /oauth/v2/accessToken: HTTP 401 unauthorized');
+  });
+
+  it('an unmapped failure without a post reads the generic sentence, the raw line rides the "?"', () => {
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'insights-fetch', ok: false, errorCode: 'engine_failure', errorMessage: 'weird internal thing happened', actor: 'pendpost' },
+    ];
+    renderActivity();
+    expect(screen.getByText('That did not work. Please try again.')).toBeInTheDocument();
+    expect(visibleText(/weird internal thing/)).toHaveLength(0);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('engine_failure: weird internal thing happened');
+  });
+
+  it('a failed row that opens its post shows the plain sentence and nests no "?" in the row button', () => {
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'publish', ok: false, platform: 'linkedin', campaign: 'c', postId: 'p', errorMessage: 'boom' },
+    ];
+    renderActivity({ onOpenPost: vi.fn() });
+    const row = screen.getByRole('button', { name: /open c \/ p/i });
+    expect(within(row).getByText('LinkedIn did not accept the post.')).toBeInTheDocument();
+    expect(within(row).queryByText(/boom/)).toBeNull();
+    expect(within(row).queryByRole('button')).toBeNull();
   });
 });

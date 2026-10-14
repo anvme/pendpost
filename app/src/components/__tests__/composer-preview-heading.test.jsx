@@ -99,10 +99,28 @@ describe('Composer hides the preview label + toggle when there is nothing to pre
     expect(previewToggle()).not.toBeInTheDocument();
   });
 
-  it('edit mode, text post WITH a link: keeps the eyebrow + toggle (a link card renders)', () => {
-    const linked = { ...textOnlyPost, id: 't2', link: 'https://example.com' };
+  it('edit mode, LinkedIn text post WITH a link: keeps the eyebrow + toggle (the LinkedIn card renders)', () => {
+    const linked = { ...textOnlyPost, id: 't2', platforms: ['linkedin'], link: 'https://example.com' };
     renderComposer({ mode: 'edit', post: linked, campaigns: [{ id: 'launch', active: true, posts: [linked] }] });
     expect(previewHeading()).toBeInTheDocument();
     expect(previewToggle()).toBeInTheDocument();
+    expect(screen.getByText(/linkedin card preview/i)).toBeInTheDocument();
+  });
+
+  // Only LinkedIn builds a link card; an X post with a link publishes as plain text, so
+  // there is nothing to preview (and never a card captioned as LinkedIn).
+  it('edit mode, X text post WITH a link: no LinkedIn card, no eyebrow, no toggle', () => {
+    const linked = { ...textOnlyPost, id: 't3', link: 'https://example.com' };
+    renderComposer({ mode: 'edit', post: linked, campaigns: [{ id: 'launch', active: true, posts: [linked] }] });
+    expect(screen.queryByText(/linkedin card preview/i)).not.toBeInTheDocument();
+    expect(previewHeading()).not.toBeInTheDocument();
+    expect(previewToggle()).not.toBeInTheDocument();
+  });
+
+  it('edit mode, LinkedIn text post WITHOUT a link: no card (LinkedIn posts it as plain text)', () => {
+    const plain = { ...textOnlyPost, id: 't4', platforms: ['linkedin'] };
+    renderComposer({ mode: 'edit', post: plain, campaigns: [{ id: 'launch', active: true, posts: [plain] }] });
+    expect(screen.queryByText(/linkedin card preview/i)).not.toBeInTheDocument();
+    expect(previewHeading()).not.toBeInTheDocument();
   });
 });

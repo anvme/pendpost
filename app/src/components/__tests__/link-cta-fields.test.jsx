@@ -105,7 +105,7 @@ function renderDcEmbed(props = {}) {
 describe('DiscordEmbedFields (spec 14 authoring)', () => {
   it('renders the honest buttons-gated hint', () => {
     renderDcEmbed();
-    expect(screen.getByText(/buttons need an app-owned webhook/i)).toBeInTheDocument();
+    expect(screen.getByText(/buttons need your own Discord app/i)).toBeInTheDocument();
   });
 
   it('shows the seeded values for an existing embed', () => {

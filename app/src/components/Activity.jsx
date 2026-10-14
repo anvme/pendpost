@@ -7,9 +7,11 @@ import { useT } from '../lib/i18n.js';
 import { Skeleton, PLATFORM_META, INNER_SURFACE, FIELD_MULTILINE, DISABLED_PRIMARY } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
-import { PROJECT_CHIP } from './ui/recipes.js';
+import { PROJECT_CHIP, STATUS_INK } from './ui/recipes.js';
 import { ClientAvatar } from './ClientSwitcher.jsx';
 import { dayKey, fmtTime, dateLocale, X_PORTAL_URL, GCP_APIS_CONSOLE_URL, isAbsoluteHttpUrl } from '../lib/format.js';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction, humanizeCheck, humanizeFailure, laneLabel } from '../lib/failureCopy.js';
 
 // Map a FAILED activity entry to a one-click fix (data, not UI - like ACTION_LABEL
 // above). The source of truth for the setup-class strings is platformValidate()'s
@@ -22,6 +24,22 @@ function resolveRemediation(entry) {
   if (entry.ok !== false) return null;
   const msg = entry.errorMessage || '';
   const code = entry.errorCode || '';
+  // A per-lane insights row (lib/insights.mjs, one row per state change) carries its
+  // reason class as errorCode. Only two of them have a fix the owner can do in one step:
+  // turn the API on in Google Cloud, or reconnect an expired sign-in. A missing permission
+  // (LinkedIn's Community Management product, Meta's insights access) and a plain fetch
+  // error have none, so they get no button: a "Reconnect" there would change nothing.
+  if (entry.action === 'insights-fetch' && entry.platform) {
+    if (code === 'api_disabled') return { kind: 'apiDisabled', ctaKey: 'activity.fix.apiDisabled' };
+    if (code === 'token') return { kind: 'setup', ctaKey: 'activity.fix.setup' };
+    return null;
+  }
+  // A reconnect that landed locally but could not reach the cloud vault (lib/writes.mjs
+  // resealAfterReconnect): no renewal will retry it, so the fix is Re-sync now on the cloud page.
+  if (entry.action === 'token-refresh' && code === 'cloud_reseal_failed_reconnect') return { kind: 'cloud', ctaKey: 'activity.fix.cloudResync' };
+  // A failed token renewal (the daily refresh in lib/writes.mjs dailyTokenRefresh): the
+  // refresh token itself is gone, so the one fix is reconnecting the lane in Setup.
+  if (entry.action === 'token-refresh' && code !== 'cloud_reseal_failed') return { kind: 'setup', ctaKey: 'activity.fix.setup' };
   // Meta action-block / rate-limit -> the Meta lane cadence + pause controls.
   if (code === 'blocked_368' || /action block|\b368\b|rate.?limit/i.test(msg)) {
     return { kind: 'metaCadence', ctaKey: 'activity.fix.metaCadence' };
@@ -136,6 +154,11 @@ const ACTION_LABEL = {
   // (the scheduler's media gate). A defer like cadence-defer - the post stays due
   // and fires the moment the file is back.
   'media-missing-defer': 'activity.action.mediaMissingDefer',
+  // Fail-closed backstop (lib/scheduler.mjs claim gate): the cloud has this post
+  // (it acknowledged the push) but cannot answer the publish claim, so local holds
+  // instead of risking a duplicate. A defer like media-missing-defer: the post
+  // stays due and the next tick asks the cloud again.
+  'cloud-claim-wait': 'activity.action.cloudClaimWait',
   // G5 (B8): the two unattended Radar actions (lib/radar-sweep.mjs). The daily
   // agent research run spends the operator's money overnight; the author-reply
   // reconcile is the "someone answered you" morning glance. Both used to render
@@ -183,6 +206,7 @@ const ACTION_NOTE = {
   'cloud-backstop': 'activity.note.cloudBackstop',
   'cadence-defer': 'activity.note.cadenceDefer',
   'media-missing-defer': 'activity.note.mediaMissingDefer',
+  'cloud-claim-wait': 'activity.note.cloudClaimWait',
 };
 
 // Maps an entry's errorCode to the i18n key for its NOTE body (data, not UI
@@ -200,6 +224,111 @@ const ERROR_NOTE = {
   stale_content: 'activity.error.stale_content',
 };
 
+// A scheduled Radar scan a SPEND LIMIT stopped (the owner's daily agent budget, or the agent
+// subscription's weekly/session limit) is a neutral note, not a failure: nothing to fix and
+// the next scan runs by itself (lib/radar-sweep.mjs NEUTRAL_SCAN_CODES logs it ok:true).
+// Rows written before that fix carry ok:false; neutralScanRow reads them neutral too. The
+// raw line (the limit's reset time) rides the "?".
+const NEUTRAL_SCAN_NOTE = {
+  budget: 'activity.note.radarBudget',
+  limit: 'activity.note.agentLimit',
+};
+const neutralScanRow = (e) => (e && e.ok === false && e.action === 'radar-agent-scan' && NEUTRAL_SCAN_NOTE[e.errorCode] ? { ...e, ok: true } : e);
+
+// The old once-a-night insights row ("N fetch(es) failed: meta error, youtube api_disabled",
+// no platform) predates the per-lane rows lib/insights.mjs writes now: each lane's standing
+// problem is tracked and shown on its own row from then on. The aggregate is history, so it
+// reads neutral with no fix button (a fix it pointed at may long be done); the raw line
+// rides the "?".
+const LEGACY_INSIGHTS_AGGREGATE = /^\d+ fetch\(es\) failed:/;
+const legacyInsightsRow = (e) => (e && e.ok === false && e.action === 'insights-fetch' && !e.platform && LEGACY_INSIGHTS_AGGREGATE.test(e.errorMessage || '')
+  ? { ...e, ok: true, errorCode: 'insights_legacy' } : e);
+const neutralRow = (e) => legacyInsightsRow(neutralScanRow(e));
+
+// A row's note as { text, raw }. A mapped errorCode (ERROR_NOTE) or action (ACTION_NOTE) is
+// our own localized sentence. A note on a row that did NOT fail stays its message (the
+// load-bearing counts, windows and slot times above). A FAILED row never shows the engine's
+// English errorMessage inline: it reads the failureCopy sentence (humanizeFailure for a row
+// about a post, humanizeCheck for one that is not, whose sentences read true for a
+// connection), else the generic error.action, and `raw` carries the message for the "?".
+// A per-lane insights row as one plain sentence, by lane + reason class (the server text
+// is English and stays behind the "?"). LinkedIn's missing permission is its pending
+// Community Management application, so it says that instead of the generic permission line.
+// Meta's failures vary, so its sentence carries the sanitized real reason (entry.detail).
+function insightsNote(entry, t) {
+  const lane = laneLabel(entry.platform);
+  const code = entry.errorCode || '';
+  if (entry.ok !== false) return code === 'insights_recovered' ? t('activity.insights.back', { lane }) : null;
+  if (entry.platform === 'linkedin' && code === 'needs_page_role') return t('activity.insights.linkedinPageRole');
+  if (entry.platform === 'linkedin' && code === 'needs_scope') return t('activity.insights.linkedinScope');
+  if (code === 'api_disabled') return t('activity.insights.apiDisabled', { lane });
+  if (code === 'token') return t('activity.insights.token', { lane });
+  if (entry.platform === 'meta' && entry.detail) return t('activity.insights.reason', { lane, reason: entry.detail });
+  if (code === 'needs_scope') return t('activity.insights.scope', { lane });
+  return t('activity.insights.failed', { lane });
+}
+
+// A token-refresh row's sentence by code: the renewal's own cloud copy failed (retried on the
+// next renewal), the reconnect's cloud copy failed (Re-sync now), else the renewal failed.
+const TOKEN_REFRESH_NOTE = {
+  cloud_reseal_failed: 'activity.tokenRefresh.resealFailed',
+  cloud_reseal_failed_reconnect: 'activity.tokenRefresh.resealReconnectFailed',
+};
+
+// The nightly insights summary row (no platform): a lane stale for more than 2 days, or an
+// offline run, as our own sentence built from its structured lanes[] (the server text is
+// English and rides the "?").
+function insightsSummaryNote(entry, t) {
+  const lanes = Array.isArray(entry.lanes) ? entry.lanes.filter((l) => l && l.lane) : [];
+  if (!lanes.length) return null;
+  if (entry.errorCode === 'insights_stale') {
+    const list = lanes.map((l) => t('insights.stale.lane', { lane: laneLabel(l.lane), date: new Date(l.since).toLocaleDateString(dateLocale(), { dateStyle: 'medium' }) })).join(', ');
+    return t('activity.insights.stale', { days: 2, lanes: list });
+  }
+  if (entry.errorCode === 'insights_offline') return t('activity.insights.offline', { lanes: lanes.map((l) => laneLabel(l.lane)).join(', ') });
+  return null;
+}
+
+function rowNote(entry, t) {
+  if (entry.action === 'insights-fetch' && !entry.platform) {
+    const text = insightsSummaryNote(entry, t);
+    if (text) return { text, raw: entry.errorMessage && entry.errorMessage !== text ? entry.errorMessage : null };
+  }
+  if (entry.action === 'insights-fetch' && entry.platform) {
+    const text = insightsNote(entry, t);
+    if (text) return { text, raw: entry.ok === false && entry.errorMessage && entry.errorMessage !== text ? entry.errorMessage : null };
+  }
+  if (entry.action === 'token-refresh' && entry.ok === false) {
+    const key = TOKEN_REFRESH_NOTE[entry.errorCode] || 'activity.tokenRefresh.failed';
+    return { text: t(key, { lane: laneLabel(entry.platform) }), raw: entry.errorMessage || null };
+  }
+  if (ERROR_NOTE[entry.errorCode]) return { text: t(ERROR_NOTE[entry.errorCode]), raw: null };
+  if (entry.errorCode === 'insights_legacy') return { text: t('activity.note.insightsLegacy'), raw: entry.errorMessage || null };
+  if (entry.action === 'radar-agent-scan' && NEUTRAL_SCAN_NOTE[entry.errorCode]) return { text: t(NEUTRAL_SCAN_NOTE[entry.errorCode]), raw: entry.errorMessage || null };
+  if (ACTION_NOTE[entry.action]) return { text: t(ACTION_NOTE[entry.action]), raw: null };
+  if (!entry.errorMessage) return null;
+  const raw = `${entry.errorCode ? `${entry.errorCode}: ` : ''}${entry.errorMessage}`;
+  if (entry.ok !== false) return { text: raw, raw: null };
+  const failure = { message: entry.errorMessage, code: entry.errorCode, lane: entry.platform };
+  const mapped = entry.postId ? humanizeFailure(failure, t) : humanizeCheck(failure, t);
+  return { text: mapped.text || t('error.action'), raw };
+}
+
+// A failed action's alert, the Setup anatomy: the plain sentence ({ text, raw } from
+// humanizeAction) is the alert, and the raw server line rides the house "?" beside it, never
+// inline and never inside the alert. `children` is the alert's leading glyph.
+function ActionError({ error, children = null }) {
+  if (!error) return null;
+  return (
+    <div className="flex items-start gap-1">
+      <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
+        {children} {error.text}
+      </p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
+
 // C7: a SMALL fixed set of action GROUPS (curated, like STATUS_FILTERS) that
 // fold the ~30 ACTION_LABEL ids above into one chip each. Data, not UI - the
 // labels resolve through t() at render via the activity.action.group.* keys.
@@ -216,7 +345,11 @@ export const ACTION_GROUPS = [
   // 'mock-id-cleared' files under publish (like preflight-blocked): it is about
   // THIS post's publish lifecycle and must ride the default feed so the operator
   // sees the id was cleared and the post needs a re-run.
-  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'media-missing-defer', 'preflight-blocked', 'mock-id-cleared', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
+  // 'cloud-claim-wait' files under publish (like media-missing-defer) for the same
+  // reason: it is the one row that says why THIS due post did not fire (the cloud
+  // has it and cannot answer the publish claim), and it is ok:true, so under
+  // 'system' the default feed would hide it.
+  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'media-missing-defer', 'cloud-claim-wait', 'preflight-blocked', 'mock-id-cleared', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
   // 'slot-slip' (R6a) is a machine-initiated reschedule of an unapproved post, so
   // it files with the schedule moves and rides the default feed - the operator must
   // see that the slot moved (and can approve earlier to publish earlier).
@@ -286,18 +419,11 @@ function dayHeader(iso, t) {
 function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
   const t = useT();
   const meta = entry.platform ? PLATFORM_META[entry.platform] : null;
-  // Note body: a mapped errorCode wins first (a known, translatable failure
-  // reason - see ERROR_NOTE above), then a mapped action code (ACTION_NOTE);
-  // either resolves to a localized note so the de-CH UI never leaks raw
-  // English. Otherwise fall back to the raw errorMessage (with its code
-  // prefix) so unmapped/error notes still show rather than going blank.
-  const noteText = ERROR_NOTE[entry.errorCode]
-    ? t(ERROR_NOTE[entry.errorCode])
-    : ACTION_NOTE[entry.action]
-      ? t(ACTION_NOTE[entry.action])
-      : entry.errorMessage
-        ? `${entry.errorCode ? `${entry.errorCode}: ` : ''}${entry.errorMessage}`
-        : null;
+  // Note body (rowNote): a mapped errorCode wins first (ERROR_NOTE), then a mapped
+  // action code (ACTION_NOTE), so the de-CH UI never leaks raw English; a failed row's
+  // unmapped errorMessage becomes the failureCopy sentence with the raw line for the "?".
+  const note = rowNote(entry, t);
+  const noteText = note?.text || null;
   // A failed row with a specific, actionable fix shows a single amber wrench CTA
   // (jumps straight to the fix); the row is then a plain div - the wrench is the
   // only interactive control, so no nesting. Generic failures keep the
@@ -313,18 +439,20 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
     // api_disabled: open the Cloud console straight at the API to enable (the row's own
     // activation URL when it has one, else the APIs library). A reconnect in Setup would
     // be the wrong door, so this never routes there.
+    else if (remediation?.kind === 'cloud') onNavigate?.('cloud');
     else if (remediation?.kind === 'apiDisabled') window.open(isAbsoluteHttpUrl(entry.helpUrl) ? entry.helpUrl : GCP_APIS_CONSOLE_URL, '_blank', 'noopener,noreferrer');
     else onNavigate?.('setup', remediation?.kind === 'metaCadence' ? 'facebook' : entry.platform);
   };
   // US-ACT-10: an entry that carries a post is a clickable row that opens it (no
-  // dead ends). The error rides as plain text with a native title for the full
-  // string, so there is no nested-interactive control inside the row button.
+  // dead ends). Its note is the plain sentence only, so there is no nested-interactive
+  // control inside the row button: the post detail it opens carries the failure's "?".
+  // A row that is not a button keeps the raw line behind the house "?" beside its note.
   const openable = Boolean(entry.campaign && entry.postId && onOpenPost) && !remediation;
   // A defer (cadence throttle, missing media/render) is a deferral, not a success
   // or failure - render it with the design system's amber "waiting/held" token
   // (Clock), and tone its message amber rather than red (it is informational, the
   // post stays due).
-  const isDefer = entry.action === 'cadence-defer' || entry.action === 'media-missing-defer';
+  const isDefer = entry.action === 'cadence-defer' || entry.action === 'media-missing-defer' || entry.action === 'cloud-claim-wait';
   // Consecutive identical entries are folded into one row carrying a count + a
   // time range (set in the grouping step); show "×N" and "from–to" when n>1.
   const count = entry.count || 1;
@@ -350,7 +478,7 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
               Icon + text tooltip, never colour-only. No new filter/group. */}
           {entry.attest ? (
             <span
-              className="ml-1.5 inline-flex align-middle text-emerald-600 dark:text-emerald-300"
+              className={`ml-1.5 inline-flex align-middle ${STATUS_INK.ok}`}
               title={t('activity.attest.title', { kid: entry.attest.kid })}
               aria-label={t('activity.attest.title', { kid: entry.attest.kid })}
             >
@@ -387,7 +515,10 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
           // (entry.ok === false). Amber only for a real defer (the post stays due).
           // A note riding on a SUCCESS (e.g. a backstop/cloud-miss under a green
           // check) is neutral zinc - a local backstop publish is not degraded.
-          <p title={noteText} className={`max-w-full truncate text-[11px] ${entry.ok === false ? 'text-red-600/90 dark:text-red-300/90' : isDefer ? 'text-amber-700/90 dark:text-amber-300/90' : 'text-zinc-500 dark:text-zinc-400'}`}>{noteText}</p>
+          <div className="flex min-w-0 max-w-full items-center gap-1">
+            <p title={noteText} className={`min-w-0 truncate text-[11px] ${entry.ok === false ? 'text-red-600/90 dark:text-red-300/90' : isDefer ? 'text-amber-700/90 dark:text-amber-300/90' : 'text-zinc-500 dark:text-zinc-400'}`}>{noteText}</p>
+            {openable ? null : <InfoTip label={note.raw} />}
+          </div>
         ) : null}
       </div>
       <p className="shrink-0 whitespace-nowrap text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -463,7 +594,7 @@ function ReviewRow({ review, onReply, t }) {
       setDraft('');
       setOpen(false);
     } catch (err) {
-      setError(err?.message || t('reviews.reply.error'));
+      setError(humanizeAction(err, t, { fallbackKey: 'reviews.reply.error', lane: 'gbp' }));
     } finally {
       setBusy(false);
     }
@@ -493,11 +624,9 @@ function ReviewRow({ review, onReply, t }) {
             rows={2}
             className={`${FIELD_MULTILINE} w-full resize-y`}
           />
-          {error ? (
-            <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-              <AlertCircle size={11} aria-hidden="true" /> {error}
-            </p>
-          ) : null}
+          <ActionError error={error}>
+            <AlertCircle size={11} aria-hidden="true" />
+          </ActionError>
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
@@ -528,7 +657,7 @@ function ReviewRow({ review, onReply, t }) {
         </div>
       ) : currentReply ? (
         <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-          <p className="flex min-w-0 items-start gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-300">
+          <p className={`flex min-w-0 items-start gap-1.5 text-[11px] ${STATUS_INK.ok}`}>
             <CornerDownRight size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
             <span className="break-words">{currentReply}</span>
           </p>
@@ -581,7 +710,7 @@ function InboundReplyBox({ event, onReply, onNavigate, t }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [replied, setReplied] = useState(false);
-  const [error, setError] = useState(null); // null | { code, message }
+  const [error, setError] = useState(null); // null | { code, text, raw }
   const isDM = event.type === 'message';
   const limit = isDM ? DM_REPLY_SOFT_LIMIT : TWEET_REPLY_LIMIT;
   const len = draft.length;
@@ -598,7 +727,7 @@ function InboundReplyBox({ event, onReply, onNavigate, t }) {
       setOpen(false);
     } catch (err) {
       const code = err?.code;
-      setError({ code, message: err?.message });
+      setError({ code, ...humanizeAction(err, t, { fallbackKey: 'inbox.reply.error', lane: event.platform || null }) });
       // needs_scope / credits / target_gone are terminal for this send: collapse the box
       // and let the mapped remediation stand in its place (retrying the same draft would
       // fail the same way). A generic error keeps the box open so the operator can retry.
@@ -611,7 +740,7 @@ function InboundReplyBox({ event, onReply, onNavigate, t }) {
   // (append-only feed - the source thread won't refresh until the next pull).
   if (replied) {
     return (
-      <p className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-300">
+      <p className={`flex items-center gap-1.5 text-[11px] ${STATUS_INK.ok}`}>
         <CornerDownRight size={11} aria-hidden="true" /> {t('inbox.reply.replied')}
       </p>
     );
@@ -706,9 +835,9 @@ function InboundReplyBox({ event, onReply, onNavigate, t }) {
       {/* A generic (non-mapped) failure keeps the box open with an inline red row so the
           operator can adjust and retry. */}
       {error && error.code !== 'needs_scope' && error.code !== 'credits' && error.code !== 'target_gone' ? (
-        <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-          <AlertCircle size={11} aria-hidden="true" /> {error.message || t('inbox.reply.error')}
-        </p>
+        <ActionError error={error}>
+          <AlertCircle size={11} aria-hidden="true" />
+        </ActionError>
       ) : null}
     </div>
   );
@@ -815,10 +944,14 @@ function ReviewsInbox({ active, onNavigate }) {
     body = <div className="space-y-1.5">{[0, 1].map((i) => <Skeleton key={i} className="h-16 w-full" />)}</div>;
   } else if (isError || (data && data.ok === false)) {
     body = (
-      <p role="alert" className={`flex flex-wrap items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs text-red-600 dark:text-red-300 ${INNER_SURFACE}`}>
-        <AlertCircle size={13} aria-hidden="true" /> {t('reviews.error')}
-        {(data?.message || data?.error) ? <span className="text-zinc-500 dark:text-zinc-400">{data.message || data.error}</span> : null}
-      </p>
+      // The engine's own read error (English) rides the "?" beside the plain sentence,
+      // never inline and never inside the alert.
+      <div className={`flex items-start gap-1 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
+        <p role="alert" className="flex flex-wrap items-center gap-1.5 text-xs text-red-600 dark:text-red-300">
+          <AlertCircle size={13} aria-hidden="true" /> {t('reviews.error')}
+        </p>
+        <InfoTip label={data?.message || data?.error || null} />
+      </div>
     );
   } else if (data?.needsScope) {
     body = (
@@ -882,7 +1015,7 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
   // derives from `rows`, so the whole pipeline is reused unchanged; a per-client read
   // failure rides the inline notice below, never the page-level error (mirrors Radar).
   const rows = useMemo(
-    () => (allClients && Array.isArray(allRows) ? allRows : (data?.activity || [])),
+    () => (allClients && Array.isArray(allRows) ? allRows : (data?.activity || [])).map(neutralRow),
     [allClients, allRows, data],
   );
   const isLoading = allClients ? allLoading : singleLoading;

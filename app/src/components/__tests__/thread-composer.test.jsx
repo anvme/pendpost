@@ -115,6 +115,19 @@ describe('ThreadComposer save orchestration', () => {
     // Only 2 attempts: opener ok, second fails, third (its child) never attempted.
     await waitFor(() => expect(createPost).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('alert')).toHaveTextContent(/saved 1 of 3/i);
+    // The failed tweet's row says a plain sentence; the server's line rides the "?" only.
+    expect(screen.getByText(/txt1-2 failed/)).toHaveTextContent('txt1-2 failed: That did not work. Please try again.');
+    expect(screen.queryByText(/boom/, { ignore: '.sr-only' })).toBeNull();
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('boom');
+  });
+
+  it('a message-less failure still says the plain sentence on the failed row', async () => {
+    const user = userEvent.setup();
+    createPost.mockImplementationOnce(() => Promise.reject(new Error()));
+    renderThread();
+    await authorTweets(user, ['a', 'b']);
+    await user.click(screen.getByRole('button', { name: /create thread/i }));
+    expect(await screen.findByText(/txt1 failed/)).toHaveTextContent('txt1 failed: That did not work. Please try again.');
   });
 
   it('retry after a partial failure skips the already-saved tweets (no double-create)', async () => {

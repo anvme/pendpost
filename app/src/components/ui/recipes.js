@@ -8,7 +8,7 @@
 // This file only holds the recipes; callers plug in their own icon + label + tone.
 // Landing note: recipes.js + the RadarFeed/Radar/AutonomyLedger migration ship first (UX
 // issue 10); Freigaben/Planner/Settings + the shared ui.jsx primitives (StatusPill,
-// ApprovalPill, PostStatusPill, NextActorChip) re-base on these same tokens in a follow-up.
+// PostStatusPill, NextActorChip) re-base on these same tokens in a follow-up.
 
 import { DISABLED_PRIMARY } from './tokens.js';
 
@@ -17,14 +17,27 @@ import { DISABLED_PRIMARY } from './tokens.js';
 const FOCUS_RING = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 
 // a. STATUS - non-interactive, icon + word, tone from the semantic palette.
+// Colour is spent only on attention (canon Tier 2): `ok` names an ALL-CLEAR or done state
+// ("Aktiv", "Gepostet") and renders exactly as `neutral`, so green never becomes the
+// background that dulls a real amber or red. The icon + word carry the meaning. The accent is
+// chrome (tags such as "Neu"), never a state tone: an "on" state is `ok`, not `accent`.
+const PILL_NEUTRAL = 'bg-zinc-500/10 text-zinc-600 ring-zinc-500/20 dark:text-zinc-300';
 export const PILL_BASE = 'inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1';
 export const PILL_TONES = {
-  ok: 'bg-emerald-500/15 text-emerald-700 ring-emerald-500/30 dark:text-emerald-300',
+  ok: PILL_NEUTRAL,
   attention: 'bg-amber-500/15 text-amber-700 ring-amber-500/30 dark:text-amber-300',
   danger: 'bg-red-500/15 text-red-700 ring-red-500/30 dark:text-red-300',
   info: 'bg-sky-500/15 text-sky-700 ring-sky-500/30 dark:text-sky-300',
-  neutral: 'bg-zinc-500/10 text-zinc-600 ring-zinc-500/20 dark:text-zinc-300',
+  neutral: PILL_NEUTRAL,
   accent: 'bg-brand/10 text-brand ring-brand/20 dark:text-brand-light',
+};
+
+// a'. STATUS INK: the same rule for a bare glyph or word with no pill around it (a check
+// beside "aktuell", a signed-receipt shield, the delivery monitor): an all-clear is quiet grey.
+export const STATUS_INK = {
+  ok: 'text-zinc-600 dark:text-zinc-300',
+  warn: 'text-amber-700 dark:text-amber-300',
+  err: 'text-red-600 dark:text-red-300',
 };
 
 // b. INFO CHIP - a count or tag; no ring, no tone, never bolder than semibold.
@@ -54,7 +67,21 @@ export const BTN_GHOST = `inline-flex items-center gap-1 rounded-lg px-2 py-1 te
 // padding of its own and it does not fight the base recipe's spacing utilities. The 8px it
 // reaches past a 28px glyph button is the `gap-2` between row controls, so two neighbouring
 // targets meet without overlapping and neither steals the other's clicks.
-export const TAP_TARGET = "relative after:absolute after:left-1/2 after:top-1/2 after:h-11 after:w-full after:min-w-11 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']";
+//
+// TAP_TARGET_Y is the same box without the 44px width floor: 44px tall, exactly as wide as the
+// control. It is for controls that are already wide enough to hit but sit in tight `gap-1`
+// rows of siblings (IconBadge chips), where min-w-11 on a 23px chip would reach ~10px past each
+// side and over the neighbour. Pair it with a `relative z-[1]` painted child so that, where a
+// wrapped row's boxes overlap vertically, the chip you can see always wins the tap.
+export const TAP_TARGET_Y = "relative after:absolute after:left-1/2 after:top-1/2 after:h-11 after:w-full after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']";
+export const TAP_TARGET = `${TAP_TARGET_Y} after:min-w-11`;
+
+// d'. QUIET DESTRUCTIVE - a standalone destructive action that sits beside a neutral one on a
+// card (Setup's "Trennen" next to "Prüfen"). Muted and one step smaller than the neutral
+// action at rest, red only on hover/focus, so the two never read as equals. It carries the
+// 44px hit area (TAP_TARGET above), and the caller keeps a confirm gate in front of the
+// consequence.
+export const BTN_DANGER_QUIET = `${TAP_TARGET} inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-zinc-600 transition hover:bg-red-500/10 hover:text-red-600 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-red-300 ${FOCUS_RING}`;
 
 // f. MENU ITEM - one row inside an overflow menu (ui/RowMenu.jsx, and the Radar-local RowMenu in
 // radar/RadarFeed.jsx). Unlike a row control, a menu item has no density to protect: the popover
@@ -78,8 +105,8 @@ export const MENU_ITEM_TONES = {
 // - BTN_QUIET for every named secondary action ("Erledigt", "Bearbeiten", "Stoppen", Open pill).
 // - BTN_GHOST only for tertiary/utility affordances that navigate or reveal (overflow
 //   trigger, transcript disclosure, "add a link"), never for an action with a consequence.
-// - Destructive: a red menu item inside RowMenu/overflow, or a two-step inline confirm;
-//   never a red standalone button on a card.
+// - Destructive: a red menu item inside RowMenu/overflow, a two-step inline confirm, or
+//   BTN_DANGER_QUIET in front of a confirm dialog; never a red standalone button on a card.
 // - Any control whose painted box is under 44px in either axis carries TAP_TARGET. That is
 //   every glyph-only trigger and every text-tier button in a dense row.
 // - A menu item is the one exception: it uses MENU_ITEM, which is 44px tall for real.

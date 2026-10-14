@@ -215,10 +215,12 @@ try {
   // 159 routes / 133 tools = +radar_triage_bulk (granular-filters bulk dismiss) WITH its REST twin
   // POST /api/radar/triage-bulk (+1 each), PLUS the GUI-only POST /api/radar/restore (the undo verb,
   // no MCP twin by design - routes exemption), so routes go +2, tools +1, the 1 UI-only unchanged.
-  ok(/159 routes, 133 tools.*1 documented UI-only/.test(parityOut),
+  // 160 routes / 134 tools = +radar_tune (relevance plan 1e, the query tuner) with its REST twin
+  // POST /api/radar/tune (+1 each).
+  ok(/160 routes, 134 tools.*1 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 159/133 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 160/134 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

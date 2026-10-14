@@ -11,13 +11,33 @@ export function TooltipProvider({ children }) {
   );
 }
 
+// Input modality, the same heuristic browsers use for :focus-visible: a keydown means
+// the next focus is the keyboard's, a pointerdown means it is not. Starts as keyboard
+// so a focus with no prior interaction still announces its label.
+let keyboardModality = true;
+if (typeof document !== 'undefined') {
+  document.addEventListener('keydown', () => { keyboardModality = true; }, true);
+  document.addEventListener('pointerdown', () => { keyboardModality = false; }, true);
+  document.addEventListener('mousedown', () => { keyboardModality = false; }, true);
+}
+
+// Radix opens a tooltip on ANY focus of its trigger, including the programmatic
+// focus a Popover or Dialog hands back to its trigger when it closes. After a mouse
+// click on an action inside (say "Manage cloud", which also navigates), that left
+// the trigger's tooltip open over the next page: nothing blurs the trigger and the
+// pointer never leaves it. Only keyboard focus opens the tooltip; hover is untouched.
+// Radix skips its own focus handler when ours calls preventDefault.
+function openOnKeyboardFocusOnly(event) {
+  if (!keyboardModality) event.preventDefault();
+}
+
 // Wraps a single focusable child. With no label it renders the child untouched,
 // so callers can pass an optional label without branching.
 export function Tip({ label, side = 'top', align = 'center', children }) {
   if (!label) return children;
   return (
     <RT.Root>
-      <RT.Trigger asChild>{children}</RT.Trigger>
+      <RT.Trigger asChild onFocus={openOnKeyboardFocusOnly}>{children}</RT.Trigger>
       <RT.Portal>
         <RT.Content
           side={side}

@@ -97,3 +97,36 @@ describe('nextActorOf contradiction fixtures', () => {
     expect(nextActorOf(post, null)).toEqual({ key: 'reApprove', actor: 'you' });
   });
 });
+
+// P4: the queue's chip derives from the SAME status word the planner card, List row and
+// detail header wear (postStatusWord). A lane that is meant to publish but is not connected
+// is BLOCKED (connect it), never "you post this yourself": that wording belongs only to a
+// genuinely manual paste lane (MANUAL_LANES, today reddit), where posting by hand IS the path.
+describe('nextActorOf: blocked lane vs manual paste lane', () => {
+  const setupTelegramOffline = { platforms: [
+    { platform: 'telegram', status: 'incomplete' },
+    { platform: 'reddit', status: 'incomplete' },
+    { platform: 'linkedin', status: 'connected' },
+  ] };
+
+  it('a non-manual lane that is not connected reads blocked, you-actor (connect it)', () => {
+    const post = { ...base, platforms: ['telegram'], approval: 'approved', scheduledAt: '2026-08-20T07:00:00Z', derivedState: 'waiting-due' };
+    expect(nextActorOf(post, setupTelegramOffline)).toEqual({ key: 'blocked', actor: 'you' });
+    expect(nextActorOf({ ...post, approval: 'pending' }, setupTelegramOffline)).toEqual({ key: 'blocked', actor: 'you' });
+  });
+
+  it('the manual paste lane alone keeps the hand-off (you post it yourself)', () => {
+    const post = { ...base, platforms: ['reddit'], approval: 'pending', derivedState: 'waiting-due' };
+    expect(nextActorOf(post, setupTelegramOffline)).toEqual({ key: 'handOff', actor: 'you' });
+  });
+
+  it('a blocked lane beside a paste lane is still blocked: pendpost cannot send the rest either', () => {
+    const post = { ...base, platforms: ['reddit', 'telegram'], approval: 'pending', derivedState: 'waiting-due' };
+    expect(nextActorOf(post, setupTelegramOffline)).toEqual({ key: 'blocked', actor: 'you' });
+  });
+
+  it('a rejected post keeps its own word over the lane block, like the planner pill', () => {
+    const post = { ...base, platforms: ['telegram'], approval: 'rejected', derivedState: 'waiting-due' };
+    expect(nextActorOf(post, setupTelegramOffline)).toEqual({ key: 'rejected', actor: 'you' });
+  });
+});

@@ -3,12 +3,27 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, AlertCircle, Check, X, HelpCircle, ChevronDown, Pause } from 'lucide-react';
 import { ToggleRow } from './ui/Switch.jsx';
 import { effectiveRadarSourcesClient } from '../lib/format.js';
-import { useConfig, useAccounts, useSignals, saveConfig, errText } from '../lib/api.js';
+import { useConfig, useAccounts, useSignals, saveConfig, errAlert } from '../lib/api.js';
 import { PLATFORM_META, INNER_SURFACE, FIELD, FIELD_MULTILINE, EYEBROW, SectionHeading, DISABLED_PRIMARY } from './ui.jsx';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { Select } from './ui/Select.jsx';
 import { useConfirm } from './ui/confirm.jsx';
+import { TAP_TARGET } from './ui/recipes.js';
+import InfoTip from './ui/InfoTip.jsx';
+
+// A failed Radar settings save is lib/api.js errAlert(err, t, 'radar.error.save'): one plain
+// sentence, with the server's raw line behind the "?" only, never inline.
+function SaveError({ error }) {
+  if (!error) return null;
+  return (
+    <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
+      <AlertCircle size={14} aria-hidden="true" />
+      <p role="alert">{error.text}</p>
+      <InfoTip label={error.raw} />
+    </div>
+  );
+}
 import { useT } from '../lib/i18n.js';
 
 // The Radar SEARCHES editor - the per-project "what Radar looks for" surface. It used to sit on
@@ -54,6 +69,12 @@ function toDraft(q) {
     paused: q.enabled === false,
   };
 }
+// Does the draft carry anything behind the "narrow it down" disclosure?
+const hasNarrowing = (d) => Boolean(
+  String(d.keywords || '').trim() || String(d.excludeKeywords || '').trim() || String(d.competitors || '').trim()
+  || String(d.subreddits || '').trim() || String(d.hashtags || '').trim() || String(d.minScore ?? '').trim()
+  || d.warmup === true || d.mention === true,
+);
 const splitList = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
 // Does this draft scan the given engine? No sources picked = every engine, so yes.
 const scans = (draft, id) => !draft.sources.length || draft.sources.includes(id);
@@ -149,7 +170,7 @@ function DailyRunBlock({ radar, config, onNavigate, setError, t }) {
     setError(null);
     saveConfig(config.rev, { posting: { radar: partial } })
       .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
-      .catch((err) => setError(errText(err, t, 'radar.error.save')));
+      .catch((err) => setError(errAlert(err, t, 'radar.error.save')));
   };
   return (
     <div className={`space-y-2 rounded-xl p-3 ${INNER_SURFACE}`}>
@@ -209,16 +230,25 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
     onChange({ ...draft, sources: has ? draft.sources.filter((s) => s !== id) : [...draft.sources, id] });
   };
   const picked = (draft.sources || []).filter((s) => SOURCE_IDS.includes(s));
+  // Recognition over recall: a search whose narrowing is already set (the keywords the signal's
+  // query-chip popover just showed, a warm-up flag, ...) opens with that disclosure expanded, so
+  // the editor shows what the operator came to change. A bare search keeps it folded. Decided
+  // once per editor mount; after that the operator's own toggle wins.
+  const [advancedOpen, setAdvancedOpen] = useState(() => hasNarrowing(draft));
   const shownSources = SOURCE_IDS.filter((id) => (sourceIds || SOURCE_IDS).includes(id) || picked.includes(id));
   return (
     <div className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+      {/* The editor names the search it edits (the row it replaced showed the label as its
+          title; a deep link from a signal's query chip lands here, so the heading is what tells
+          the operator they arrived at the right search). A new search reads "Suche hinzufügen". */}
       <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 truncate text-sm font-semibold">{draft.label.trim() || t('radar.setup.formTitle')}</p>
         {saved ? (
-          <span className="ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
             <Check size={12} aria-hidden="true" />{t('radar.query.saved')}
           </span>
         ) : null}
-        <button type="button" onClick={onClose} aria-label={t('radar.query.close')} className={`${saved ? '' : 'ml-auto'} rounded-lg p-1 text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300`}>
+        <button type="button" onClick={onClose} aria-label={t('radar.query.close')} className={`shrink-0 rounded-lg p-1 text-zinc-500 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300 ${TAP_TARGET}`}>
           <X size={14} aria-hidden="true" />
         </button>
       </div>
@@ -230,30 +260,6 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
         <FieldLabel htmlFor="radar-q-brief" label={t('radar.query.brief')} tip={t('radar.query.brief.tip')} t={t} />
         <textarea id="radar-q-brief" rows={3} className={`${FIELD_MULTILINE} w-full resize-y`} value={draft.brief} placeholder={t('radar.query.briefPlaceholder')} onChange={(e) => onChange({ ...draft, brief: e.target.value })} />
       </div>
-
-      {/* Warm-up (Reddit karma builder): only meaningful on a query that scans Reddit, so it
-          appears only when Reddit is one of the sources. Flipping it steers the agent brief to
-          look for comment-worthy threads + non-promo post ideas instead of buying intent, and
-          pins the karma pill/filter on this query's signals. A single-feature on/off, so it uses
-          the house ToggleRow (Switch), not a set-membership checkbox. */}
-      {scans(draft, 'reddit') ? (
-        <ToggleRow
-          label={t('radar.query.warmup')}
-          tip={t('radar.query.warmup.tip')}
-          checked={draft.warmup === true}
-          onChange={() => onChange({ ...draft, warmup: !(draft.warmup === true) })}
-        />
-      ) : null}
-
-      {/* R9 brand mention (reputation): turns this query into a watch for people talking ABOUT the
-          brand rather than for buying intent. Works on any lane, so it is always offered. A
-          single-feature on/off, so it uses the house ToggleRow (Switch). */}
-      <ToggleRow
-        label={t('radar.query.mention')}
-        tip={t('radar.query.mention.tip')}
-        checked={draft.mention === true}
-        onChange={() => onChange({ ...draft, mention: !(draft.mention === true) })}
-      />
 
       {/* Pause: the search keeps all its keywords + sources but is skipped by every scan
           (enabled:false). Cadence is decided once, globally (Automatic daily scan), so on/paused
@@ -268,7 +274,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
 
       {/* Structured narrowing, one disclosure down (canon: config never stacks on the intent it
           refines). Everything here is optional; the brief above already makes a search complete. */}
-      <details className="group rounded-xl">
+      <details open={advancedOpen} onToggle={(e) => setAdvancedOpen(e.currentTarget.open)} className="group rounded-xl">
         <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1 text-xs font-semibold text-zinc-500 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
           <ChevronDown size={13} aria-hidden="true" className="transition-transform group-open:rotate-180" />
           {t('radar.query.advanced')}
@@ -335,6 +341,29 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
             <FieldLabel htmlFor="radar-q-minscore" label={t('radar.query.minScore')} tip={t('radar.query.minScore.tip')} t={t} />
             <input id="radar-q-minscore" type="number" inputMode="numeric" min={0} max={100} step={1} className={`${FIELD} w-20 tabular-nums`} value={draft.minScore} placeholder="0" onChange={(e) => onChange({ ...draft, minScore: e.target.value })} />
           </div>
+          {/* Warm-up (Reddit karma builder): only meaningful on a query that scans Reddit, so it
+              appears only when Reddit is one of the sources. Flipping it steers the agent brief to
+              look for comment-worthy threads + non-promo post ideas instead of buying intent, and
+              pins the karma pill/filter on this query's signals. A single-feature on/off, so it uses
+              the house ToggleRow (Switch), not a set-membership checkbox. */}
+          {scans(draft, 'reddit') ? (
+            <ToggleRow
+              label={t('radar.query.warmup')}
+              tip={t('radar.query.warmup.tip')}
+              checked={draft.warmup === true}
+              onChange={() => onChange({ ...draft, warmup: !(draft.warmup === true) })}
+            />
+          ) : null}
+
+          {/* R9 brand mention (reputation): turns this query into a watch for people talking ABOUT the
+              brand rather than for buying intent. Works on any lane, so it is always offered. A
+              single-feature on/off, so it uses the house ToggleRow (Switch). */}
+          <ToggleRow
+            label={t('radar.query.mention')}
+            tip={t('radar.query.mention.tip')}
+            checked={draft.mention === true}
+            onChange={() => onChange({ ...draft, mention: !(draft.mention === true) })}
+          />
         </div>
       </details>
     </div>
@@ -355,31 +384,24 @@ function SetupPanel({ t, onAddByHand }) {
   );
 }
 
-// Which sources this project's searches cover. The old text run-on ("wird durchsucht ·
-// verbinden, um zu antworten" per source) is replaced by the SHARED glyph strip: platform
-// glyphs with a status dot, tooltip + accessible name carrying the sentence, connect
-// deep-link only where a Studio path exists. Same component as the Radar page header.
-function SourceCoverage({ radar, capabilities, accounts, sourceStatus, skippedPlatforms, onNavigate }) {
+// Which sources this project's searches cover: the SHARED glyph strip (same component as the
+// Radar page header), one platform glyph per scanned source, tooltip + accessible name carrying
+// "wird durchsucht". Scanning only; reply lanes are named by the reply judge elsewhere.
+function SourceCoverage({ radar, capabilities, accounts, sourceStatus, skippedPlatforms }) {
   // The EFFECTIVE scan set (WP6: Setup-card flags + auto-ready connected lanes), not the
   // per-query union - a query narrows within this set, and each query row already names its
   // own sources, so repeating the narrowing here would be the same fact twice.
   const used = effectiveRadarSourcesClient(radar, capabilities, accounts, sourceStatus, skippedPlatforms);
   if (!used.length) return null;
   return (
-    <RadarSourceGlyphs
-      sources={used}
-      capabilities={capabilities}
-      accounts={accounts}
-      sourceStatus={sourceStatus}
-      onNavigate={onNavigate}
-    />
+    <RadarSourceGlyphs sources={used} />
   );
 }
 
 // The Settings-hosted Radar searches section. Self-contained config read/write, its own editing
 // state + debounced auto-save (same shape the Radar page used to carry). `focus === 'radar'`
 // scrolls it into view when the Radar page's settings link deep-links here.
-export default function RadarSearches({ focus = false, onNavigate }) {
+export default function RadarSearches({ focus = false, focusQueryId = null, onNavigate }) {
   const t = useT();
   const confirm = useConfirm();
   const queryClient = useQueryClient();
@@ -416,7 +438,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
       await saveConfig(config.rev, { posting: { radar: nextRadar } });
       queryClient.invalidateQueries({ queryKey: ['config'] });
     } catch (err) {
-      setError(err?.message || t('radar.error.save'));
+      setError(errAlert(err, t, 'radar.error.save'));
     }
   };
   const onEnable = () => persistRadar({ ...radar, enabled: true });
@@ -430,6 +452,19 @@ export default function RadarSearches({ focus = false, onNavigate }) {
     lastSavedRef.current = JSON.stringify(buildQuery(d));
   };
   const closeEdit = () => { setEditing(null); setDraft(EMPTY_DRAFT); setSaved(false); lastSavedRef.current = null; };
+
+  // Deep-link edit ('radar:<queryId>' from a signal's query chip or the By-search Tune link):
+  // open that search's editor once the config has it. Applied once per focus token, so closing
+  // the editor afterwards is not undone by a re-render.
+  const appliedFocusRef = useRef(null);
+  useEffect(() => {
+    if (!focusQueryId || appliedFocusRef.current === focusQueryId) return;
+    const q = (Array.isArray(radar.queries) ? radar.queries : []).find((x) => x && x.id === focusQueryId);
+    if (!q) return;
+    appliedFocusRef.current = focusQueryId;
+    startEdit(q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusQueryId, radar.queries]);
 
   // Debounced auto-save. Orphan guard: only persist once minimally valid (a label; no sources is
   // fine, it means all engines), so an abandoned empty new draft is never written. A new query
@@ -456,7 +491,10 @@ export default function RadarSearches({ focus = false, onNavigate }) {
       await persistRadar({ ...radar, queries });
       lastSavedRef.current = serial;
       setSaved(true);
-      if (editing === 'new') setEditing(built.id);
+      // A new search is NOT promoted to its id here: that moved the open editor from the top slot
+      // into the list, i.e. unmounted and remounted it mid-typing, so a pause longer than the
+      // debounce dropped focus and the next keystrokes went nowhere. The editor stays where the
+      // operator opened it; the list hides the new search's row while it is open (below).
     }, 500);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -489,11 +527,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
         ) : null}
       />
 
-      {error ? (
-        <div role="alert" className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
-          <AlertCircle size={14} aria-hidden="true" />{error}
-        </div>
-      ) : null}
+      <SaveError error={error} />
 
       {!enabled ? (
         // Radar off: the honest opt-in. Enabling it here is the same write the old panel offered.
@@ -517,6 +551,9 @@ export default function RadarSearches({ focus = false, onNavigate }) {
               const querySources = (q.sources || []).length
                 ? (q.sources || []).map((s) => (SOURCE_IDS.includes(s) ? sourceLabel(t, s) : s)).join(' · ')
                 : t('radar.query.sources.all');
+              // The brand-new search being written in the top editor already has a saved row; hide it
+              // until the editor closes so the search is never shown twice.
+              if (editing === 'new' && q.id === draft.id) return null;
               return (
               <li key={q.id}>
                 {editing === q.id ? (
@@ -560,7 +597,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
             })}
           </ul>
           {hasQueries ? (
-            <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} skippedPlatforms={config?.posting?.skippedPlatforms} onNavigate={onNavigate} />
+            <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} skippedPlatforms={config?.posting?.skippedPlatforms} />
           ) : null}
           {/* The Radar AUTONOMY (auto-reply score + X Enterprise) stays in the Autonomy ledger
               (ux-audit R7): one surface for "what may pendpost do without me". The daily research
@@ -602,7 +639,7 @@ export function RadarGeo() {
       await saveConfig(config.rev, { posting: { radar: { geo: { ...geo, buyingQuestions: next } } } });
       queryClient.invalidateQueries({ queryKey: ['config'] });
     } catch (err) {
-      setError(err?.message || t('radar.error.save'));
+      setError(errAlert(err, t, 'radar.error.save'));
     }
   };
   const addQuestion = () => {
@@ -626,11 +663,7 @@ export function RadarGeo() {
         ) : null}
       />
 
-      {error ? (
-        <div role="alert" className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
-          <AlertCircle size={14} aria-hidden="true" />{error}
-        </div>
-      ) : null}
+      <SaveError error={error} />
 
       {questions.length ? (
         <ul className="flex flex-wrap gap-2">
@@ -730,7 +763,7 @@ export function RadarBrand() {
       await saveConfig(config.rev, { posting: { radar: { brand: { facts, audience: '', isSupplyOnly } } } });
       queryClient.invalidateQueries({ queryKey: ['config'] });
     } catch (err) {
-      setError(err?.message || t('radar.error.save'));
+      setError(errAlert(err, t, 'radar.error.save'));
     } finally {
       setSaving(false);
     }
@@ -756,11 +789,7 @@ export function RadarBrand() {
         ) : null}
       />
 
-      {error ? (
-        <div role="alert" className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
-          <AlertCircle size={14} aria-hidden="true" />{error}
-        </div>
-      ) : null}
+      <SaveError error={error} />
 
       <div className="space-y-1.5">
         <label htmlFor="radar-brand-facts" className="block text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('settings.brand.facts')}</label>

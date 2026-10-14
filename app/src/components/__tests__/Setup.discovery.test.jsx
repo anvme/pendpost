@@ -21,6 +21,7 @@ const useDiscoverMock = vi.fn(() => ({ data: discoverData, isLoading: loadingFla
 vi.mock('../../lib/api.js', () => ({
   useDiscover: (...a) => useDiscoverMock(...a),
   useSignals: () => ({ data: undefined, isLoading: false }),
+  usePlans: () => ({ data: undefined }),
   saveConfig: (...a) => saveConfigMock(...a),
   // Spec 28: Setup.jsx references these four at module scope (PROFILE_EDIT_API) -
   // any wholesale api.js mock must stub them even when this test never calls them.
@@ -111,6 +112,8 @@ describe('DiscoveryBlock (spec 22 connected-account discovery)', () => {
     renderBlock('x');
     expect(screen.getByText(/couldn't read this account/i)).toBeInTheDocument();
     expect(screen.getByText(/reconnect/i)).toBeInTheDocument();
+    // One plain sentence, no em dash (owner rule: zero em dashes in the UI).
+    expect(screen.getByText(/couldn't read this account/i).textContent).toBe("Couldn't read this account: reconnect to fix it.");
     // It must NOT masquerade as the empty state.
     expect(screen.queryByText(/no manageable/i)).not.toBeInTheDocument();
   });

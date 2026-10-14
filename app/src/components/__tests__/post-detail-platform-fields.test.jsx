@@ -312,7 +312,7 @@ describe('PostDetail — platform-relevant fields', () => {
     }));
     expect(screen.getByText('Story stickers')).toBeInTheDocument();
     expect(screen.queryByText('2 stickers')).not.toBeInTheDocument();
-    expect(screen.getByText('Poll: Which? - A / B')).toBeInTheDocument();
+    expect(screen.getByText('Poll: Which? · A / B')).toBeInTheDocument();
     expect(screen.getByText('Mention: @someone')).toBeInTheDocument();
     expect(screen.getByText(/Add these by hand in the Instagram app/)).toBeInTheDocument();
   });

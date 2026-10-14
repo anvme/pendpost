@@ -12,6 +12,7 @@ import { CheckCircle2, AlertCircle, Play, Loader2, ChevronDown, ChevronRight } f
 import { usePendpostHealth, setSchedulerRunning, resumeLane } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY, PLATFORM_META } from './ui.jsx';
+import { STATUS_INK } from './ui/recipes.js';
 
 // A pendpost_health blocker arrives as { code, params } (the locale-INDEPENDENT face
 // of the English blockers[]); render it via t() so the readiness panel localizes.
@@ -157,7 +158,7 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
           <div id="readiness-content" aria-live="polite">
           {ready ? (
             <div className={`flex items-start gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-              <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              <CheckCircle2 size={15} className={`mt-0.5 shrink-0 ${STATUS_INK.ok}`} aria-hidden="true" />
               <div className="min-w-0">
                 <p className="text-xs font-bold">{t('readiness.ready')}</p>
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('readiness.readySub')}</p>

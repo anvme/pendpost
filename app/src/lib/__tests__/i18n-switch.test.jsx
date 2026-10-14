@@ -82,14 +82,12 @@ describe('I18nProvider live locale switch', () => {
     expect(hasStoredLocale()).toBe(true);
   });
 
-  it('carries the verify-failed tips + overdueUnpublished blocker in BOTH packs (they were missing, so the tooltip rendered undefined and the blocker its raw key)', () => {
+  it('carries the overdueUnpublished blocker in BOTH packs (it was missing, so the blocker rendered its raw key)', () => {
     for (const locale of ['en', 'de-CH']) {
       let captured;
       const KeyProbe = () => {
         const t = useT();
         captured = {
-          statusTip: t('status.tip.verify-failed'),
-          stateTip: t('state.tip.verify-failed'),
           blocker: t('blocker.overdueUnpublished', { postId: 'reel-01', reason: 'not found' }),
         };
         return null;
@@ -99,8 +97,6 @@ describe('I18nProvider live locale switch', () => {
           <KeyProbe />
         </I18nProvider>,
       );
-      expect(captured.statusTip).not.toBe('status.tip.verify-failed');
-      expect(captured.stateTip).not.toBe('state.tip.verify-failed');
       expect(captured.blocker).toContain('reel-01');
       expect(captured.blocker).toContain('not found');
     }

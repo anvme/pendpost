@@ -24,6 +24,7 @@ const archiveClient = vi.fn(() => Promise.resolve({ ok: true }));
 const setActive = vi.fn(() => Promise.resolve({ ok: true }));
 
 vi.mock('../../lib/api.js', () => ({
+  usePlansAll: (clients) => (clients || []).map(() => ({ data: undefined, isLoading: true })),
   useClients: () => ({ data: clientsState, isLoading: false, isError: false, error: null }),
   useClientsOverview: () => ({ data: overviewState, isLoading: false, isError: false, error: null }),
   createClient: vi.fn(() => Promise.resolve({ ok: true })),
@@ -97,9 +98,28 @@ describe('Clients table Health cell (B5)', () => {
     expect(within(globexRow).getByText(/\bok\b/i)).toBeInTheDocument();
   });
 
+  // D13 (phase 3, LOAD cut): nothing in scheduling reads a project's timezone at a glance, so
+  // the table drops the column; the field stays in the edit form.
+  it('has no Timezone column and no timezone value in the rows', () => {
+    renderClients();
+    expect(screen.queryByRole('columnheader', { name: /timezone/i })).toBeNull();
+    const acmeRow = screen.getByRole('row', { name: /acme retail/i });
+    expect(within(acmeRow).queryByText('UTC')).toBeNull();
+  });
+
   it('has no axe violations', async () => {
     const { container } = renderClients();
     expect(await axeClean(container)).toHaveNoViolations();
+  });
+});
+
+// Tier-3 (phase 3): the page title "Projekte" is the app chrome's own <h1> (App.jsx pageTitle),
+// so the page no longer repeats it as a parenthetical h2 ("Projekte (lokale Arbeitsbereiche)").
+describe('Clients page does not repeat its title', () => {
+  it('renders no in-page heading that repeats the page title', () => {
+    renderClients();
+    expect(screen.queryByRole('heading', { level: 2, name: /projects/i })).toBeNull();
+    expect(screen.queryByText(/\(local workspaces\)/i)).toBeNull();
   });
 });
 
@@ -108,7 +128,8 @@ describe('Clients subtitle is sentence case (US-MC-13 anti-slop)', () => {
     renderClients();
     // clients.subtitle must read in sentence case ("Local client administration"),
     // never the all-caps-for-emphasis "LOCAL ..." that violates the DESIGN.md rule.
-    const subtitle = screen.getByText(/local project administration/i);
+    // One sentence (Q9): what a project is, where it lives, what it does not need.
+    const subtitle = screen.getByText('Each project is its own workspace on this device, with no login and no billing.');
     expect(subtitle).toBeInTheDocument();
     expect(subtitle.textContent).not.toMatch(/\bLOCAL\b/);
   });
@@ -147,7 +168,11 @@ describe('Clients C5 ifRev concurrency + hardened logo upload', () => {
     const input = screen.getByLabelText(/logo/i);
     await user.upload(input, makeImage()); // a valid .png; the SERVER rejects (duplicate)
 
-    expect(await screen.findByText(/already exists in data\/media/i)).toBeInTheDocument();
+    // One plain sentence inline; the server's English line rides the "?" only.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not upload the logo.');
+    expect(alert).not.toHaveTextContent(/already exists/i);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription(/already exists in data\/media/i);
     expect(updateClient).not.toHaveBeenCalled();
   });
 
@@ -308,5 +333,110 @@ describe('Clients archived ordering', () => {
     expect(zedIdx).toBeGreaterThan(acmeIdx);
     // The archived project keeps a usable restore action.
     expect(screen.getByRole('button', { name: /restore .*Zed Archived/i })).toBeInTheDocument();
+  });
+});
+
+// final-a7: at 375px the overview table scrolled sideways (601px of table in a 309px box). Below
+// md each project now reflows into a stacked row (the SAME table and cells, re-laid by CSS, so
+// there is no second markup to drift): name and actions on top, status and timezone under it,
+// the health line last. The column headers stay for assistive tech (sr-only), the desktop table
+// is untouched, and nothing scrolls sideways on a phone. The real geometry (no sideways scroll
+// at 375) is measured in verify-shell-scroll.cjs.
+describe('Clients overview on a phone: stacked rows, no sideways scroll', () => {
+  const tok = (el, t) => (el.getAttribute('class') || '').split(/\s+/).includes(t);
+
+  it('the table is no sideways scroller below md and keeps its desktop scroller from md up', () => {
+    renderClients();
+    const table = screen.getByRole('table');
+    for (let el = table.parentElement; el && !tok(el, 'rounded-2xl'); el = el.parentElement) {
+      expect(tok(el, 'overflow-x-auto'), el.className).toBe(false);
+    }
+    expect(tok(table.parentElement, 'md:overflow-x-auto')).toBe(true);
+    expect(tok(table, 'max-md:block')).toBe(true);
+    expect(tok(table.querySelector('thead'), 'max-md:sr-only')).toBe(true);
+    expect(tok(table.querySelector('tbody'), 'max-md:block')).toBe(true);
+  });
+
+  it('each project row is a two-column stacked grid: name and actions share the top line', () => {
+    renderClients();
+    const row = screen.getByRole('row', { name: /acme retail/i });
+    for (const t of ['max-md:grid', 'max-md:grid-cols-[minmax(0,1fr)_auto]']) expect(tok(row, t), t).toBe(true);
+    const cells = within(row).getAllByRole('cell');
+    // D13: four cells, no Timezone column.
+    expect(cells).toHaveLength(4);
+    const [name, status, health, actions] = cells;
+    expect(tok(name, 'max-md:row-start-1')).toBe(true);
+    expect(tok(actions, 'max-md:row-start-1')).toBe(true);
+    expect(tok(actions, 'max-md:col-start-2')).toBe(true);
+    expect(tok(status, 'max-md:col-start-1')).toBe(true);
+    expect(tok(health, 'max-md:col-span-2')).toBe(true);
+    for (const c of cells) expect(tok(c, 'max-md:block'), c.className).toBe(true);
+  });
+
+  it('an empty cell takes no line on a phone (archived health)', () => {
+    clientsState = {
+      activeClientId: 'acme',
+      clients: [
+        { id: 'acme', displayName: 'Acme Retail', status: 'active', timezone: '', rev: 'r2' },
+        { id: 'zed', displayName: 'Zed Archived', status: 'archived', timezone: 'UTC', rev: 'r1' },
+      ],
+    };
+    renderClients();
+    const acme = within(screen.getByRole('row', { name: /acme retail/i })).getAllByRole('cell');
+    expect(tok(acme[2], 'max-md:hidden')).toBe(false);
+    const zed = within(screen.getByRole('row', { name: /zed archived/i })).getAllByRole('cell');
+    expect(tok(zed[2], 'max-md:hidden')).toBe(true);
+    expect(tok(zed[3], 'max-md:hidden')).toBe(false);
+  });
+});
+
+// The raw-error sweep: every Projects failure the owner sees is one plain sentence; a server
+// line never renders inline, it rides the house "?" beside the alert.
+describe('Clients failures speak a plain sentence', () => {
+  const moreAbout = () => screen.getByRole('button', { name: /more about this/i });
+
+  it('a message-less save failure still shows the plain sentence', async () => {
+    updateClient.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderClients();
+    const form = await openEditForm(user, 'Acme Retail');
+    await user.click(within(form).getByRole('button', { name: /^save/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save the project.');
+  });
+
+  it('a save rejected with an English server line keeps it behind the "?"', async () => {
+    updateClient.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderClients();
+    const form = await openEditForm(user, 'Acme Retail');
+    await user.click(within(form).getByRole('button', { name: /^save/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not save the project.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(moreAbout()).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('a failed archive says the plain sentence, the server line rides the "?"', async () => {
+    archiveClient.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderClients();
+    const globexRow = screen.getByRole('row', { name: /globex inc/i });
+    await user.click(within(globexRow).getByRole('button', { name: /archive globex/i }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /^archive$/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not complete the action.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(moreAbout()).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('an unreadable registry names the plain cause, the parser line rides the "?"', () => {
+    clientsState = { error: { message: 'Unexpected token } in JSON at position 42' }, clients: [] };
+    renderClients();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Project registry unreadable');
+    expect(alert).toHaveTextContent('Could not read data/clients.json');
+    expect(alert).not.toHaveTextContent(/Unexpected token/);
+    expect(moreAbout()).toHaveAccessibleDescription('Unexpected token } in JSON at position 42');
   });
 });

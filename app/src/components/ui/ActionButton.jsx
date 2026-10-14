@@ -8,7 +8,7 @@ import { forwardRef, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from './cn.js';
 
-const DWELL_MS = 1700;
+export const DWELL_MS = 1700;
 
 // status: 'idle' | 'loading' | 'success' | 'error'
 export function useActionState() {
@@ -34,7 +34,9 @@ export function useActionState() {
         setStatus('idle');
         return;
       }
-      setError(err?.message || 'Error');
+      // No message means nothing to show: never invent the English 'Error', which the
+      // caller would render as the detail behind its "?". onError still fires with null.
+      setError(err?.message || null);
       setStatus('error');
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setStatus('idle'), DWELL_MS);
@@ -85,9 +87,10 @@ const ActionButton = forwardRef(function ActionButton({
 }, ref) {
   const { status, error, run } = useActionState();
 
-  // Surface a real (non-canceled) error to the caller for a persistent message.
+  // Surface a real (non-canceled) error to the caller for a persistent message. The
+  // message is null when the thrown error carried none; the caller says its own sentence.
   useEffect(() => {
-    if (status === 'error' && error) onError?.(error);
+    if (status === 'error') onError?.(error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 

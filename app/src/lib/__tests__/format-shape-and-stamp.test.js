@@ -103,7 +103,9 @@ describe('typeOptionLabel (the ONE label both format selects render)', () => {
 });
 
 describe('fmtFull (the full stamp: weekday + date + time)', () => {
-  const ISO = '2026-07-22T09:00:00+02:00'; // a Wednesday, 09:00 Europe/Zurich
+  // A Wednesday at 09:00 on the RUNNER's wall clock. fmtFull renders local time, so a
+  // fixed offset (+02:00) read 07:00 on a UTC box and failed there (cloud, CI).
+  const ISO = new Date(2026, 6, 22, 9, 0).toISOString();
 
   it('is short: weekday + dense date + time, not a spelled-out sentence', () => {
     const out = fmtFull(ISO);

@@ -156,8 +156,8 @@ try {
   // errorCode:'budget' entry - that is its own proof (test/radar-budget-truth.test.mjs);
   // here we count the RUN entries.
   const allActs = asClient(() => getActivity(20)).filter((a) => a.action === 'radar-agent-scan');
-  ok(allActs.some((a) => a.errorCode === 'budget' && a.ok === false),
-    '(f) an over-budget scheduled skip is VISIBLE in Activity (errorCode budget), never a silent null');
+  ok(allActs.some((a) => a.errorCode === 'budget' && a.ok === true),
+    '(f) an over-budget scheduled skip is VISIBLE in Activity (errorCode budget, a neutral note), never a silent null');
   const acts = allActs.filter((a) => a.errorCode !== 'budget');
   ok(acts.length === 2, `(f) each unattended job is logged to Activity (got ${acts.length})`);
   ok(acts[0].actor === 'scheduler', 'the log says WHO spent the money');

@@ -104,11 +104,12 @@ try {
   ok(!getInsights().account?.gbp, 'ungranted: no gbp account payload is stored (section omits, no false alarm)');
   ok(Boolean(loadState().insights?.data?.['local/g1/gbp']), 'ungranted degrade is ISOLATED: the per-post gbp insights row still stored');
   // Gap 4 (dim-3 audit 2026-08-04): a PARTIAL failure (per-post gbp ok, account
-  // pass needs_scope) must NOT ride a green activity row - ok:false, and the
-  // summary names the failed lane + reason class.
-  const actU = (loadState().activity || []).find((e) => e.action === 'insights-fetch');
-  ok(actU && actU.ok === false, 'ungranted: the insights-fetch activity row is ok:false on a PARTIAL failure (never a green fold)');
-  ok(/gbp needs_scope/.test(actU?.errorMessage || ''), `ungranted: the activity summary names the lane + reason class (got: ${actU?.errorMessage})`);
+  // pass needs_scope) must NOT hide in a green fold. Since the error-noise fix it is
+  // ONE row for the lane itself (platform gbp, errorCode = the reason class), logged on
+  // the state change, instead of one aggregated "N fetch(es) failed" summary.
+  const actU = (loadState().activity || []).find((e) => e.action === 'insights-fetch' && e.platform === 'gbp');
+  ok(actU && actU.ok === false, 'ungranted: the gbp lane gets its own ok:false insights-fetch row on a PARTIAL failure (never a green fold)');
+  ok(actU?.errorCode === 'needs_scope', `ungranted: the lane row carries the reason class (got: ${actU?.errorCode})`);
   // Spec 04 SS2: the digest NAMES the lane as unavailable, never a silent omission.
   ok(loadState().insights?.unavailable?.gbp?.reason === 'needs_scope', 'ungranted: state records gbp metrics as unavailable (needs_scope)');
   const digU = generateDigest({ locale: 'en' });
@@ -123,8 +124,10 @@ try {
   ok(sw.ok, 'sweep (granted) returns ok');
   // Honesty symmetry: a fully-successful sweep stays a green (folded) row and
   // CLEARS the lane's unavailable record.
-  const actG = (loadState().activity || []).find((e) => e.action === 'insights-fetch');
+  const actG = (loadState().activity || []).find((e) => e.action === 'insights-fetch' && !e.platform);
   ok(actG && actG.ok === true && !actG.errorMessage, 'granted: a fully-successful sweep stays a green activity row (still folded)');
+  const backG = (loadState().activity || []).find((e) => e.action === 'insights-fetch' && e.platform === 'gbp');
+  ok(backG && backG.ok === true && backG.errorCode === 'insights_recovered', 'granted: the recovery is one neutral ok row for the lane');
   ok(!loadState().insights?.unavailable?.gbp, 'granted: the gbp unavailable record clears once the lane fetches again');
   const env = getInsights();
   ok(env.account && typeof env.account === 'object', 'getInsights() carries an additive account map');
@@ -159,19 +162,19 @@ try {
   process.env.PENDPOST_LINKEDIN_ENGINE = stub;
   const swT = await fetchInsights({ campaign: 'li-only' });
   ok(swT.ok === true && swT.failed > 0, 'token: the sweep envelope still returns ok:true and reports the failed count');
-  const actT = (loadState().activity || []).find((e) => e.action === 'insights-fetch');
-  ok(actT && actT.ok === false, 'token: the insights-fetch activity row is ok:false');
-  ok(/linkedin not authenticated \(token\)/.test(actT?.errorMessage || ''), `token: the summary names linkedin + the token class (got: ${actT?.errorMessage})`);
+  const actT = (loadState().activity || []).find((e) => e.action === 'insights-fetch' && e.platform === 'linkedin');
+  ok(actT && actT.ok === false && actT.errorCode === 'token', 'token: the linkedin lane row is ok:false with the token class');
+  ok(/not authenticated/.test(actT?.errorMessage || ''), `token: the row keeps the "not authenticated" phrasing the Setup wrench routes on (got: ${actT?.errorMessage})`);
   ok(loadState().insights?.unavailable?.linkedin?.reason === 'token', 'token: state records linkedin metrics as unavailable (token)');
   const digT = generateDigest({ locale: 'en' });
-  ok(/Metrics unavailable: .*LinkedIn \(fetch failed\)/.test(digT.digest), 'token: the en digest names LinkedIn as unavailable (fetch failed)');
+  ok(/Metrics unavailable: .*LinkedIn \(sign-in expired, reconnect in Setup\)/.test(digT.digest), 'token: the en digest names LinkedIn with its own reason (sign-in expired)');
   const digTde = generateDigest({ locale: 'de-CH' });
-  ok(/Kennzahlen nicht verfügbar: .*LinkedIn \(Abruf fehlgeschlagen\)/.test(digTde.digest), 'token: the de-CH digest line is localized');
+  ok(/Kennzahlen nicht verfügbar: .*LinkedIn \(Anmeldung abgelaufen, unter Einrichtung neu verbinden\)/.test(digTde.digest), 'token: the de-CH digest line is localized');
   delete process.env.PENDPOST_LINKEDIN_ENGINE;
   const swR = await fetchInsights({ campaign: 'li-only' });
   ok(swR.ok === true && swR.failed === 0, 'recovery: with the engine healthy again the sweep has zero failures');
   ok(!loadState().insights?.unavailable?.linkedin, 'recovery: the linkedin unavailable record clears');
-  ok((loadState().activity || []).find((e) => e.action === 'insights-fetch')?.ok === true, 'recovery: the newest insights-fetch activity row is green again');
+  ok((loadState().activity || []).find((e) => e.action === 'insights-fetch' && e.platform === 'linkedin')?.errorCode === 'insights_recovered', 'recovery: the linkedin lane logs one neutral "statistics are back" row');
 
   // ---- digest surfaces the Local performance section -------------------------
   const digest = generateDigest({ locale: 'en' });

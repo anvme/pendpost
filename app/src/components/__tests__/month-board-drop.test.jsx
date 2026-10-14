@@ -1,4 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
 import { MonthView } from '../Planner.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
@@ -10,17 +11,21 @@ import { TooltipProvider } from '../ui/Tooltip.jsx';
 // this only asserts the Month view now has the same drop wiring the Week view had.
 
 function renderMonth(props = {}) {
+  // The month dot reads the cached health payload (the app always has a QueryClient).
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <TooltipProvider>
-      <MonthView
-        posts={props.posts || []}
-        monthAnchor={props.monthAnchor || new Date('2026-06-15T00:00:00')}
-        onSelect={() => {}}
-        onMoveToDay={props.onMoveToDay}
-        loading={false}
-        lane={{}}
-      />
-    </TooltipProvider>,
+    <QueryClientProvider client={qc}>
+      <TooltipProvider>
+        <MonthView
+          posts={props.posts || []}
+          monthAnchor={props.monthAnchor || new Date('2026-06-15T00:00:00')}
+          onSelect={() => {}}
+          onMoveToDay={props.onMoveToDay}
+          loading={false}
+          lane={{}}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>,
   );
 }
 

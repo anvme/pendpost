@@ -11,6 +11,8 @@ import { createCampaign } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import ReadinessChecklist from './ReadinessChecklist.jsx';
+import InfoTip from './ui/InfoTip.jsx';
+import { humanizeAction } from '../lib/failureCopy.js';
 
 // The server validates the campaign id against this same rule (lib/writes.mjs
 // ID_RE) and uses it directly as a filesystem path segment, so a friendly
@@ -23,7 +25,7 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
   const queryClient = useQueryClient();
   const [id, setId] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(null); // null | { text, raw }
 
   const submit = async (e) => {
     e.preventDefault();
@@ -34,7 +36,7 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
     const slug = id.trim().toLowerCase();
     if (!slug || busy) return;
     if (!ID_RE.test(slug)) {
-      setError(t('firstRun.idHint'));
+      setError({ text: t('firstRun.idHint'), raw: null });
       return;
     }
     setBusy(true);
@@ -45,8 +47,9 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
       queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
     } catch (err) {
       // Map the server's developer-facing invalid_input message to the same
-      // friendly id hint; fall back to a generic create error otherwise.
-      setError(err.code === 'invalid_input' ? t('firstRun.idHint') : err.message || t('firstRun.error'));
+      // friendly id hint (the hint says everything, so no "?"); any other failure is the
+      // plain create sentence with the server's raw line behind the "?".
+      setError(err.code === 'invalid_input' ? { text: t('firstRun.idHint'), raw: null } : humanizeAction(err, t, { fallbackKey: 'firstRun.error' }));
     } finally {
       setBusy(false);
     }
@@ -82,7 +85,12 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
             {t('firstRun.createCampaign')}
           </button>
         </div>
-        {error ? <p id="first-campaign-error" role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+        {error ? (
+          <div className="flex items-start gap-1">
+            <p id="first-campaign-error" role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error.text}</p>
+            <InfoTip label={error.raw} />
+          </div>
+        ) : null}
         {/* Async create is silent to AT otherwise: the spinner is aria-hidden and
             on success the component just unmounts. Announce "creating..." while
             busy so screen-reader users hear the write start, mirroring the

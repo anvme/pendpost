@@ -2,6 +2,7 @@ import { render } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PostCard } from '../Planner.jsx';
+import { CoverThumb } from '../ui.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 
@@ -62,5 +63,25 @@ describe('Planner PostCard cover aspect (Mandate D)', () => {
   it('keeps the tall 9:16 box for a reel no target crops (YouTube Shorts)', () => {
     const { container } = renderCard({ ...base, type: 'reel', platforms: ['youtube'] });
     expect(coverClass(container)).toContain('aspect-[9/16]');
+  });
+});
+
+// Judge round 2: the card's ⋯ and time chip sit over the cover's top edge, and on a text
+// post that cover is the caption itself, so the chips covered the words. The text tile
+// now starts below the chip row (the browser flow measures the boxes; this pins the hook).
+describe('Planner PostCard text cover leaves room for the overlay chips', () => {
+  it('insets the caption tile below the ⋯ / time chip row and clamps what fits', () => {
+    const { container } = renderCard({ ...base, type: 'text', platforms: ['linkedin'] });
+    const p = container.querySelector('[data-text-preview] p');
+    expect(p).not.toBeNull();
+    expect(p.className).toContain('pt-8');
+    expect(p.className).toContain('line-clamp-2');
+  });
+
+  it('other surfaces keep the full tile (no overlay there)', () => {
+    const { container } = render(<CoverThumb textPreview="hello world" className="h-12" />);
+    const p = container.querySelector('[data-text-preview] p');
+    expect(p.className).not.toContain('pt-8');
+    expect(p.className).toContain('line-clamp-4');
   });
 });

@@ -200,7 +200,11 @@ describe('X 402 credits halt: the card tells the truth', () => {
     await user.click(await screen.findByRole('button', { name: /^publish now$/i }));
     // The actionable IG failure must surface in the run-result banner; the halt marker
     // must NOT mask it (Fix A: a genuine reason wins over the lane_halted marker).
-    await waitFor(() => expect(screen.getByText(/not published: instagram upload rejected/i)).toBeInTheDocument());
+    // The engine's English line is said plainly (failureCopy); the raw text rides the "?".
+    const alert = await screen.findByRole('alert');
+    await waitFor(() => expect(alert).toHaveTextContent('Not published: Instagram did not accept the post.'));
+    expect(alert).not.toHaveTextContent(/upload rejected/i);
+    expect(within(alert.parentElement).getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('instagram upload rejected: no public URL');
     expect(screen.queryByText(/this lane is paused because the credits are used up/i)).not.toBeInTheDocument();
   });
 
@@ -212,5 +216,15 @@ describe('X 402 credits halt: the card tells the truth', () => {
     expect(screen.queryByRole('button', { name: /resume publishing/i })).not.toBeInTheDocument();
     // A per-post (non-halted) failure keeps its manual retry lever (aria-label publishNowTip).
     expect(screen.getByRole('button', { name: /publish this overdue post now/i })).toBeInTheDocument();
+  });
+
+  // Judge pass 2, fix 1: the WHY is one plain sentence; the platform's raw
+  // "lane: POST /path: HTTP nnn - ..." dump is kept for the tooltip only.
+  it('humanizes a raw platform failure in the panel, keeping the raw text as a tooltip', () => {
+    const raw = 'x: X POST /tweets: HTTP 403 - You can only reply to or quote posts where you are mentioned or are the author.';
+    renderDetail({ ...retryingPost, id: 'p4', lastFailure: { ...retryingPost.lastFailure, message: raw, terminal: true } });
+    const why = screen.getByText(/X only allows replies to strangers with its expensive Enterprise access/);
+    expect(why).toHaveAttribute('title', raw);
+    expect(screen.queryByText(raw)).not.toBeInTheDocument();
   });
 });

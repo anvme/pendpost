@@ -6,6 +6,7 @@ import { axeClean } from '../../test-utils/axe.js';
 import Cloud from '../Cloud.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
+import { setActiveLocale, I18nProvider } from '../../lib/i18n.js';
 
 // Cloud is the UI for the OPTIONAL managed always-on runtime. We mock the cloud bridge
 // (../../lib/cloud.js) so the tests drive each state directly - loading, off/not-connected,
@@ -195,6 +196,18 @@ describe('Cloud', () => {
     await waitFor(() => expect(setClientAlwaysOn).toHaveBeenCalledWith('globex', true));
   });
 
+  // D13 (phase 3, LOAD cut): the project switch stands alone; the Monitor/Cloud glyph pair that
+  // flanked it said what the caption under the name already says.
+  it('the project switch carries no flanking Local/Cloud glyph pair', () => {
+    cloudState = connected();
+    subState = activeSub();
+    withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    renderCloud();
+    const sw = screen.getByRole('switch', { name: /24\/7 cloud for acme/i });
+    const row = sw.closest('li');
+    expect(row.querySelectorAll('span[title] > svg')).toHaveLength(0);
+  });
+
   // 2026-08-04 (ux-audit dim 4, row 14 + gap 3): turning a brand ON now seals its tokens
   // first, fail-closed. When the seal fails the server rejects with `seal_failed` and the
   // brand stays off - the UI must SURFACE that error, never report a silent success (the
@@ -210,9 +223,11 @@ describe('Cloud', () => {
     await user.click(screen.getByRole('switch', { name: /24\/7 cloud for globex/i }));
     await user.click(await screen.findByRole('button', { name: /switch to cloud/i }));
     await waitFor(() => expect(setClientAlwaysOn).toHaveBeenCalledWith('globex', true));
-    // The server's fail-closed message reaches the operator verbatim...
+    // The alert is one plain sentence; the server's fail-closed line rides the "?" only...
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/could not seal this brand's tokens/i);
+    expect(alert).toHaveTextContent('Could not update the project.');
+    expect(alert).not.toHaveTextContent(/could not seal/i);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription(/could not seal this brand's tokens/i);
     // ...the activity refresh for a successful push never fires...
     expect(invalidate).not.toHaveBeenCalled();
     // ...and the row is usable again for a retry, not stuck busy.
@@ -347,7 +362,9 @@ describe('Cloud', () => {
     renderCloud();
     await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/cloud is unreachable/i);
+    expect(alert).toHaveTextContent('Could not enable the 24/7 service.');
+    expect(alert).not.toHaveTextContent(/cloud is unreachable/i);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('cloud is unreachable');
     expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
   });
 
@@ -386,6 +403,21 @@ describe('Cloud', () => {
     expect(screen.getByRole('button', { name: /manage subscription/i })).toBeInTheDocument();
   });
 
+  // Final judge evidence pass: the renewal date in "Kosten & Limit im Detail" used the
+  // browser's locale (10/16/2026 on a de-CH page); it follows the app's date locale now.
+  it('CONNECTED: the renewal date follows the app date locale, not the browser locale', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'active', tier: 'studio', interval: 'month', allowance: 300, postsUsed: 5, postsIncluded: 300, overageCents: 10, extraBrandCents: 800, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'live', currentPeriodEnd: '2026-10-16T12:00:00.000Z', action: 'fire', checkoutEligible: false, syncStopped: false, stopReason: null, email: 'owner@studio-aurora.test' } };
+    setActiveLocale('de-CH');
+    try {
+      renderCloud();
+      expect(await screen.findByText('16.10.2026')).toBeInTheDocument();
+      expect(screen.queryByText('10/16/2026')).not.toBeInTheDocument();
+    } finally {
+      setActiveLocale('en');
+    }
+  });
+
   it('CONNECTED: sign out clears the local key without the eject ceremony (story 4)', async () => {
     cloudState = connected();
     subState = { data: { ok: true, alwaysOn: true, status: 'trialing', allowance: 10, postsUsed: 1, postsIncluded: 10, billingMode: 'live', currentPeriodEnd: null, action: 'fire', checkoutEligible: false, email: 'owner@studio-aurora.test' } };
@@ -411,28 +443,158 @@ describe('Cloud', () => {
     const user = userEvent.setup();
     renderCloud();
     await user.click(screen.getByRole('button', { name: /re-sync now/i }));
-    expect(await screen.findByText(/sealed 1, skipped 1/i)).toBeInTheDocument();
+    expect(await screen.findByText(/handed over securely: 1, skipped: 1/i)).toBeInTheDocument();
     expect(screen.getByText('Instagram')).toBeInTheDocument();
-    expect(screen.getByText(/no token in \.env/i)).toBeInTheDocument();
+    // r5: the skip reason reads in plain words; the file name lives behind the "?" only.
+    expect(screen.getByText(/x: no token set/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\.env/, { ignore: '.sr-only, script, style' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /more about this/i })).toBeInTheDocument();
     expect(screen.getByText(/pushed 1, skipped 0, accepted 1, refused 0/i)).toBeInTheDocument();
     expect(invalidate).toHaveBeenCalledWith(true);
+    // r5-b2: a clean re-sync is an all-clear, so the summary spends no colour (canon Tier 2).
+    const done = screen.getByText('Re-synced.');
+    const box = done.closest('[role="status"]');
+    expect(box.outerHTML).not.toMatch(/emerald|green-|teal-/);
   });
 
-  it('CONNECTED: sync-now reconciles and renders the patched + refused summary', async () => {
+  it('CONNECTED: sync-now with a refusal shows the warning tone and a human reason, never the raw code', async () => {
     cloudState = connected();
     reconcileCloud.mockResolvedValueOnce({
       ok: true,
       patched: [{ campaign: 'c', postId: 'p1', outcome: 'patched' }],
       skipped: [],
-      refused: [{ campaign: 'c', postId: 'p2', lane: 'meta', state: 'refused', refusedCode: 'self_approved' }],
+      refused: [{ campaign: 'c', postId: 'p2', lane: 'meta', state: 'refused', refusedCode: 'self_approved', message: null }],
     });
     const user = userEvent.setup();
     renderCloud();
     await user.click(screen.getByRole('button', { name: /^sync now$/i }));
     expect(reconcileCloud).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText(/reconciled 1, unchanged 0, refused 1/i)).toBeInTheDocument();
-    expect(screen.getByText(/p2: self_approved/i)).toBeInTheDocument();
+    const summary = await screen.findByText(/reconciled 1, unchanged 0, not published 1/i);
+    expect(summary.closest('[role="status"]')).toHaveClass('bg-amber-500/10');
+    expect(summary.closest('[role="status"]')).not.toHaveClass('bg-emerald-500/10');
+    expect(screen.getByText(/p2: The cloud did not publish this post\./)).toBeInTheDocument();
+    expect(screen.queryByText(/self_approved/)).not.toBeInTheDocument();
     expect(invalidate).toHaveBeenCalledWith(true);
+  });
+
+  it('CONNECTED: sync-now surfaces FAILED fires (no success check) with their message and a credential reason', async () => {
+    cloudState = connected();
+    reconcileCloud.mockResolvedValueOnce({
+      ok: true,
+      patched: [],
+      skipped: [],
+      refused: [{ campaign: 'c', postId: 'p3', lane: 'meta', state: 'refused', refusedCode: 'account_mismatch', message: 'engine copy' }],
+      failed: [{ campaign: 'c', postId: 'p4', lane: 'telegram', failureMessage: 'Telegram said: chat not found' }],
+    });
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /^sync now$/i }));
+    expect(await screen.findByText(/not published 2/i)).toBeInTheDocument();
+    // Humanized (lib/failureCopy.js): the platform's raw text never reaches the summary line.
+    expect(screen.getByText('p4: Telegram cannot find the destination, such as the channel or page. Check the details in Setup.')).toBeInTheDocument();
+    expect(screen.getByText(/p3: The connected Meta account is not the one this post was approved for/)).toBeInTheDocument();
+  });
+
+  it('CONNECTED: a clean sync is a quiet grey summary (an all-clear gets no colour)', async () => {
+    cloudState = connected();
+    reconcileCloud.mockResolvedValueOnce({ ok: true, patched: [{ campaign: 'c', postId: 'p1', outcome: 'patched' }], skipped: [], refused: [], failed: [] });
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /^sync now$/i }));
+    const summary = await screen.findByText(/reconciled 1, unchanged 0, refused 0/i);
+    const box = summary.closest('[role="status"]');
+    expect(box.outerHTML).not.toMatch(/emerald|green-|teal-/);
+    expect(box).not.toHaveClass('bg-amber-500/10');
+  });
+
+  // The pill reads the delivery guarantee, not only the subscription: it used to fall
+  // through to a green "On" whenever the subscription read failed, while the header dot
+  // was red. Green now means every cloud post is confirmed; unknown is never green.
+  const activeSub = () => ({ data: { ok: true, alwaysOn: true, status: 'active', tier: 'starter', postsIncluded: 400, postsUsed: 0, overageCents: 10, extraBrandCents: 900, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'live', action: 'fire' } });
+  it('PILL: a red sync reads Disrupted, not On', () => {
+    cloudState = connected({ sync: { state: 'red', reason: 'cloud_failures', pendingCount: 0, overdueCount: 0, failedCount: 1, issues: [], clients: [] } });
+    subState = activeSub();
+    renderCloud();
+    expect(screen.getByText('Disrupted')).toBeInTheDocument();
+    expect(screen.queryByText('On')).not.toBeInTheDocument();
+  });
+
+  it('PILL: an amber sync reads Attention in the warm tone', () => {
+    cloudState = connected({ sync: { state: 'amber', reason: 'worker_stale', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] } });
+    subState = activeSub();
+    renderCloud();
+    expect(screen.getByText('Attention').closest('.ring-1').className).toMatch(/amber/);
+    expect(screen.queryByText('On')).not.toBeInTheDocument();
+  });
+
+  // W1 (phase 3): waiting for the cloud to confirm (yellow = push_pending only) is not a
+  // warning. The pill stays a neutral "On", with the waiting sentence as its tip.
+  it('PILL: a yellow sync (only waiting for the cloud to confirm) is a neutral On, never Attention', () => {
+    cloudState = connected({ sync: { state: 'yellow', reason: 'push_pending', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [], clients: [] } });
+    subState = activeSub();
+    const { container } = renderCloud();
+    expect(screen.queryByText('Attention')).not.toBeInTheDocument();
+    expect(screen.getByText('On').closest('.ring-1').className).not.toMatch(/amber|red|rose/);
+    expect(container.querySelector('.bg-amber-500')).toBeNull();
+  });
+
+  it('PILL: waiting plus a FAILED subscription read is still warm (unknown is never fine)', () => {
+    cloudState = connected({ sync: { state: 'yellow', reason: 'push_pending', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [], clients: [] } });
+    subState = { data: undefined, isError: true };
+    renderCloud();
+    expect(screen.getByText('Attention')).toBeInTheDocument();
+  });
+
+  it('PILL: a FAILED subscription read never renders green', () => {
+    cloudState = connected({ sync: { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] } });
+    subState = { data: undefined, isError: true };
+    renderCloud();
+    expect(screen.getByText('Attention')).toBeInTheDocument();
+    expect(screen.queryByText('On')).not.toBeInTheDocument();
+  });
+
+  it('PROJECT ROWS: an always-on project lists EVERY issue (title, lane, plain reason, one fix), not just the first', async () => {
+    const issue = { clientId: 'globex', clientName: 'Globex', campaign: 'c', postId: 'p9', title: 'Launch day', lane: 'linkedin', message: 'irrelevant', code: 'account_unresolved', at: new Date().toISOString(), terminal: false, kind: 'credential' };
+    const second = { clientId: 'globex', clientName: 'Globex', campaign: 'c', postId: 'p10', title: 'Reply thread', lane: 'x', message: 'x: X POST /tweets: HTTP 403 - You can only reply to or quote posts where you are mentioned or are the author.', code: null, at: new Date().toISOString(), terminal: true, kind: 'post' };
+    cloudState = connected({ sync: { state: 'red', reason: 'cloud_failures', pendingCount: 0, overdueCount: 0, failedCount: 2, issues: [issue, second], clients: [{ clientId: 'acme', state: 'green', reason: 'all_confirmed' }, { clientId: 'globex', state: 'red', reason: 'cloud_failures' }] } });
+    subState = activeSub();
+    withClients([
+      { clientId: 'acme', name: 'Acme', active: true, alwaysOn: true },
+      { clientId: 'globex', name: 'Globex', active: false, alwaysOn: true },
+    ]);
+    const onIssueAction = vi.fn();
+    const user = userEvent.setup();
+    renderCloud({ onIssueAction });
+    // The credential sentence NAMES the platform ("for LinkedIn", never "this platform").
+    expect(screen.getByText(/The cloud has no connected LinkedIn account in this project/)).toBeInTheDocument();
+    // The second issue is on the row too, humanized, with its raw text only as the tooltip.
+    expect(screen.getByText('Reply thread')).toBeInTheDocument();
+    const xLine = screen.getByText(/X only allows replies to strangers/);
+    expect(xLine).toHaveAttribute('title', expect.stringContaining('HTTP 403'));
+    expect(screen.queryByText(/POST \/tweets/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(onIssueAction).toHaveBeenCalledWith(issue, 'reconnect');
+  });
+
+  // Tier-3 (phase 3): on a phone the issue rows used only the text column beside the switch,
+  // about two thirds of the width. The switch now sits on the name line and the project's detail
+  // (issues, reason, caption) spans the full row width below it.
+  it('PROJECT ROWS: the switch rides the name line and the issue list spans the full row width', () => {
+    const issue = { clientId: 'globex', clientName: 'Globex', campaign: 'c', postId: 'p9', title: 'Launch day', lane: 'linkedin', message: 'irrelevant', code: 'account_unresolved', at: new Date().toISOString(), terminal: false, kind: 'credential' };
+    cloudState = connected({ sync: { state: 'red', reason: 'cloud_failures', pendingCount: 0, overdueCount: 0, failedCount: 1, issues: [issue], clients: [{ clientId: 'globex', state: 'red', reason: 'cloud_failures' }] } });
+    subState = activeSub();
+    withClients([{ clientId: 'globex', name: 'Globex', active: false, alwaysOn: true }]);
+    renderCloud();
+    const sw = screen.getByRole('switch', { name: /24\/7 cloud for globex/i });
+    const row = sw.closest('li');
+    const tok = (el, t) => (el.getAttribute('class') || '').split(/\s+/).includes(t);
+    expect(tok(row, 'grid')).toBe(true);
+    expect(tok(row, 'grid-cols-[minmax(0,1fr)_auto]')).toBe(true);
+    const list = row.querySelector('ul[aria-label="Cloud problems"]');
+    // The detail block spans both grid columns, so it is never squeezed beside the switch.
+    expect(tok(list.parentElement, 'col-span-2')).toBe(true);
+    // The name and the switch share the first grid row.
+    expect(screen.getByText('Globex').closest('p').parentElement).toBe(row);
   });
 
   it('CONNECTED: a re-sync error renders an alert banner', async () => {
@@ -444,7 +606,9 @@ describe('Cloud', () => {
     renderCloud();
     await user.click(screen.getByRole('button', { name: /re-sync now/i }));
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/the runtime refused the connection/i);
+    expect(alert).toHaveTextContent('The action could not be completed.');
+    expect(alert).not.toHaveTextContent(/refused the connection/i);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('the runtime refused the connection');
   });
 
   // Eject lives in the account menu and is confirmed by a danger dialog first; this helper
@@ -486,23 +650,124 @@ describe('Cloud', () => {
     renderCloud();
     await ejectViaMenu(user);
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/cloud is unreachable/i);
+    expect(alert).toHaveTextContent('The action could not be completed.');
+    expect(alert).not.toHaveTextContent(/cloud is unreachable/i);
   });
 
   it('CONNECTED: a cloud-on client carries the local-paused caption on its own row', () => {
     cloudState = connected();
     withClients([{ clientId: 'pendpost', name: 'pendpost', active: true, alwaysOn: true }]);
     renderCloud();
-    // The old standalone "paused" note is gone; the state lives where it applies (the row).
-    expect(screen.getByText(/local publishing paused/i)).toBeInTheDocument();
+    // The old standalone "paused" note is gone; the state lives where it applies (the row),
+    // in words that do not read like a problem on a healthy row.
+    expect(screen.getByText(/publishes through the cloud/i)).toBeInTheDocument();
   });
 
   it('CONNECTED: a local client shows the local caption, not the cloud-paused one', () => {
     cloudState = connected();
     withClients([{ clientId: 'pendpost', name: 'pendpost', active: true, alwaysOn: false }]);
     renderCloud();
-    expect(screen.queryByText(/local publishing paused/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/publishes through the cloud/i)).not.toBeInTheDocument();
     expect(screen.getByText(/publishes from this computer/i)).toBeInTheDocument();
+  });
+
+  // --- judge pass 2: every non-green state says why; no colour on all-clear -------------
+  it('UNREACHABLE: stated once under the pill (last reached HH:MM + Check again) and every always-on row shares it', async () => {
+    const conn = { clientId: 'acme', clientName: 'Acme', campaign: null, postId: null, title: null, lane: null, message: 'cloud request failed: fetch failed', code: 'cloud_unreachable', at: new Date().toISOString(), lastOkAt: '2026-09-25T09:21:00.000Z', terminal: false, kind: 'unreachable' };
+    cloudState = connected({ sync: { state: 'amber', reason: 'cloud_unreachable', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [conn], clients: [{ clientId: 'acme', state: 'amber', reason: 'cloud_unreachable' }, { clientId: 'globex', state: 'green', reason: 'all_confirmed' }] } });
+    subState = activeSub();
+    withClients([
+      { clientId: 'acme', name: 'Acme', active: true, alwaysOn: true },
+      { clientId: 'globex', name: 'Globex', active: false, alwaysOn: true },
+    ]);
+    const user = userEvent.setup();
+    renderCloud();
+    expect(screen.getByText('Attention')).toBeInTheDocument();
+    expect(screen.getByText(/^last reached /)).toBeInTheDocument();
+    // Globex is NOT green while the one workspace is unreachable: both rows say so in words.
+    expect(screen.getAllByText('Cloud unreachable').length).toBeGreaterThanOrEqual(3);
+    expect(screen.queryByText(/publishes through the cloud/i)).not.toBeInTheDocument();
+    invalidate.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Check again' }));
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  it('SUBSCRIPTION READ FAILED: one line says so (with Check again) instead of silently dropping Plan & billing', async () => {
+    cloudState = connected({ sync: { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] } });
+    subState = { data: undefined, isError: true };
+    const user = userEvent.setup();
+    renderCloud();
+    expect(screen.getByText('Attention')).toBeInTheDocument();
+    // r5: a failed read of the plan info, said as such, and that delivery is not touched.
+    expect(screen.getByText('Subscription could not be loaded. Plan and billing show again once it loads. Delivery is not affected.')).toBeInTheDocument();
+    invalidate.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Check again' }));
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  // --- r5 (final2 judge): copy that says exactly what is true ------------------------------
+  it('SIGNED IN, email unknown: a plain "Signed in", never the placeholder "your cloud account"', async () => {
+    cloudState = connected({ sync: { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] } });
+    subState = { data: undefined, isError: true };
+    const user = userEvent.setup();
+    renderCloud();
+    expect(screen.queryByText(/your cloud account/i)).not.toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'Cloud account' });
+    expect(trigger).toHaveTextContent(/^Signed in$/);
+    await user.click(trigger);
+    expect(screen.queryByText(/your cloud account/i)).not.toBeInTheDocument();
+  });
+
+  it('WORKER STALE: its own title (the cloud answers but is not publishing), "last active HH:MM", never "Cloud unreachable"', () => {
+    const conn = { clientId: 'acme', clientName: 'Acme', campaign: null, postId: null, title: null, lane: null, message: 'x', code: 'worker_stale', at: new Date().toISOString(), lastOkAt: '2026-09-25T09:21:00.000Z', terminal: false, kind: 'worker_stale' };
+    cloudState = connected({ sync: { state: 'amber', reason: 'worker_stale', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [conn], clients: [{ clientId: 'acme', state: 'amber', reason: 'worker_stale' }, { clientId: 'globex', state: 'green', reason: 'all_confirmed' }] } });
+    subState = activeSub();
+    withClients([
+      { clientId: 'acme', name: 'Acme', active: true, alwaysOn: true },
+      { clientId: 'globex', name: 'Globex', active: false, alwaysOn: true },
+    ]);
+    renderCloud();
+    expect(screen.queryByText('Cloud unreachable')).not.toBeInTheDocument();
+    // The row under the pill and both shared project rows carry the same, accurate title.
+    expect(screen.getAllByText('Cloud is not publishing right now').length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText(/^last active /)).toBeInTheDocument();
+    expect(screen.getByText(/The cloud answers but is not publishing right now\./)).toBeInTheDocument();
+  });
+
+  it('PUSH PENDING (yellow): the project row carries its reason sentence and Check again', () => {
+    cloudState = connected({ sync: { state: 'yellow', reason: 'push_pending', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [], clients: [{ clientId: 'acme', state: 'yellow', reason: 'push_pending' }] } });
+    subState = activeSub();
+    withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    renderCloud();
+    expect(screen.queryByText('Attention')).not.toBeInTheDocument();
+    expect(screen.getByText('On')).toBeInTheDocument();
+    expect(screen.getByText(/The cloud confirms the approved posts shortly/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+  });
+
+  // D12 (phase 3): waiting for the cloud to confirm is not a warning, so the project row's dot
+  // is neutral zinc, never amber.
+  it('PUSH PENDING: the project row dot is neutral, never amber', () => {
+    cloudState = connected({ sync: { state: 'yellow', reason: 'push_pending', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [], clients: [{ clientId: 'acme', state: 'yellow', reason: 'push_pending' }] } });
+    subState = activeSub();
+    withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    renderCloud();
+    const row = screen.getByText('Acme').closest('li');
+    const dot = row.querySelector('span.rounded-full.h-2');
+    expect(dot).not.toBeNull();
+    expect(dot.className).toMatch(/bg-zinc-400/);
+    expect(row.querySelector('.bg-amber-500')).toBeNull();
+  });
+
+  it('ALL CLEAR: a neutral "On" pill (no green), no duplicate page heading, maintenance tucked into Connection details', () => {
+    cloudState = connected({ sync: { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [{ clientId: 'acme', state: 'green', reason: 'all_confirmed' }] } });
+    subState = activeSub();
+    withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    const { container } = renderCloud();
+    expect(screen.getByText('On').closest('span').className).not.toMatch(/emerald/);
+    expect(container.querySelector('.bg-emerald-500')).toBeNull();
+    expect(screen.queryByRole('heading', { level: 2 })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^sync now$/i }).closest('details')).not.toBeNull();
   });
 
   it('DISABLED: shows the included rates and posts at the decision point', () => {
@@ -581,5 +846,173 @@ describe('Cloud', () => {
     withClients([{ clientId: 'pendpost', name: 'pendpost', active: true, alwaysOn: true }]);
     const { container } = renderCloud();
     expect(await axeClean(container)).toHaveNoViolations();
+  });
+});
+
+// The raw-error sweep: every Cloud failure the owner sees is ONE plain sentence (humanizeAction
+// with the surface's own fallback key); a server or engine line is never inline, it rides the
+// house "?" beside the alert. A message-less error still leaves the sentence.
+describe('Cloud failures speak a plain sentence, the raw line rides the "?"', () => {
+  const moreAbout = () => screen.getByRole('button', { name: /more about this/i });
+  // The raw line exists only as the "?" trigger's sr-only description, never as visible text.
+  const onlyBehindTip = (re) => screen.queryAllByText(re).every((el) => el.classList.contains('sr-only'));
+
+  it('HEALABLE: a message-less heal failure shows the plain sentence', async () => {
+    cloudState = disconnected({ baseUrl: 'https://cloud.pendpost.app' });
+    healCloud.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /restore connection/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The cloud could not be reached. Check your internet connection and try again.');
+  });
+
+  it('HEALABLE: an English server error is not inline; it is the "?" description', async () => {
+    cloudState = disconnected({ baseUrl: 'https://cloud.pendpost.app' });
+    healCloud.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /restore connection/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The cloud could not be reached.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(moreAbout()).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('DISABLED: a message-less start failure still leaves the plain sentence', async () => {
+    cloudState = disconnected();
+    enableStart.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not enable the 24/7 service.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
+  });
+
+  it('CHECKOUT: a failed checkout start says the plain sentence, the server line rides the "?"', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'trialing', allowance: 10, postsUsed: 11, postsIncluded: 10, billingMode: 'test', currentPeriodEnd: null, action: 'needs_payment', checkoutEligible: true } };
+    startCheckout.mockRejectedValueOnce(new Error('/api/cloud/checkout: HTTP 502'));
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /^review starter$/i }));
+    await user.click(await screen.findByRole('button', { name: /continue to secure checkout/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not start checkout.');
+    expect(alert).not.toHaveTextContent(/HTTP 502/);
+    expect(moreAbout()).toHaveAccessibleDescription('/api/cloud/checkout: HTTP 502');
+  });
+
+  it('SPEND CAP: a failed save says the plain sentence, the server line rides the "?"', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'active', tier: 'studio', interval: 'month', allowance: 300, postsUsed: 5, postsIncluded: 300, overageCents: 10, extraBrandCents: 800, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'test', currentPeriodEnd: null, action: 'fire', checkoutEligible: false, syncStopped: false, stopReason: null } };
+    setSpendCap.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /set a cap/i }));
+    await user.type(screen.getByRole('spinbutton', { name: /spend cap/i }), '50');
+    await user.click(screen.getByRole('button', { name: /^save/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The action could not be completed.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(moreAbout()).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  // Tail2 U2 (phase 3): the meter's run() used to drop fn()'s result, so a SUCCESSFUL save or
+  // remove never invalidated the subscription and left the cap editor open.
+  const capSub = (spendCapCents) => ({ data: { ok: true, alwaysOn: true, status: 'active', tier: 'studio', interval: 'month', allowance: 300, postsUsed: 5, postsIncluded: 300, overageCents: 10, extraBrandCents: 800, brandsBilled: 0, estOverageCents: 0, spendCapCents, billingMode: 'test', currentPeriodEnd: null, action: 'fire', checkoutEligible: false, syncStopped: false, stopReason: null } });
+
+  it('SPEND CAP: a successful save refreshes the subscription and closes the editor', async () => {
+    cloudState = connected();
+    subState = capSub(null);
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /set a cap/i }));
+    await user.type(screen.getByRole('spinbutton', { name: /spend cap/i }), '50');
+    await user.click(screen.getByRole('button', { name: /^save/i }));
+    await waitFor(() => expect(screen.queryByRole('spinbutton', { name: /spend cap/i })).not.toBeInTheDocument());
+    expect(setSpendCap).toHaveBeenCalledWith(5000);
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  it('SPEND CAP: a successful remove refreshes the subscription and closes the editor', async () => {
+    cloudState = connected();
+    subState = capSub(5000);
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /^change$/i }));
+    await user.click(screen.getByRole('button', { name: /^remove$/i }));
+    await waitFor(() => expect(screen.queryByRole('spinbutton', { name: /spend cap/i })).not.toBeInTheDocument());
+    expect(setSpendCap).toHaveBeenCalledWith(null);
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  // Tail2 U3 (phase 3): an unknown token skip code used to render verbatim ("x: vault_sealed_elsewhere").
+  it('RE-SYNC: an unknown token skip code reads "not handed over", the code rides the "?"', async () => {
+    cloudState = connected();
+    migrateCloud.mockResolvedValueOnce({
+      ok: true,
+      tokens: { ok: true, handed: [], skipped: [{ platform: 'x', reason: 'vault_sealed_elsewhere' }] },
+      push: { ok: true, pushed: [], skipped: [], accepted: [], refused: [] },
+    });
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /re-sync now/i }));
+    expect(await screen.findByText(/^x: not handed over$/i)).toBeInTheDocument();
+    expect(onlyBehindTip(/vault_sealed_elsewhere/)).toBe(true);
+    expect(moreAbout()).toHaveAccessibleDescription('vault_sealed_elsewhere');
+  });
+
+  it('RE-SYNC: a refused job reads a plain reason, never the server line inline', async () => {
+    cloudState = connected();
+    migrateCloud.mockResolvedValueOnce({
+      ok: true,
+      tokens: { ok: true, handed: [], skipped: [] },
+      push: { ok: true, pushed: [], skipped: [], accepted: [], refused: [{ code: 'weird_code', message: 'job rejected: HTTP 422 unprocessable' }] },
+    });
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /re-sync now/i }));
+    expect(await screen.findByText('The cloud did not publish this post.')).toBeInTheDocument();
+    expect(onlyBehindTip(/HTTP 422/)).toBe(true);
+    expect(screen.queryByText(/weird_code/)).not.toBeInTheDocument();
+    expect(moreAbout()).toHaveAccessibleDescription('job rejected: HTTP 422 unprocessable');
+  });
+
+  it('SYNC NOW: an unknown refusal with an engine line reads the generic reason, the line rides the "?"', async () => {
+    cloudState = connected();
+    reconcileCloud.mockResolvedValueOnce({
+      ok: true,
+      patched: [],
+      skipped: [],
+      refused: [{ campaign: 'c', postId: 'p5', lane: 'meta', state: 'refused', refusedCode: 'mystery', message: 'worker said: HTTP 500 internal' }],
+    });
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /^sync now$/i }));
+    expect(await screen.findByText('p5: The cloud did not publish this post.')).toBeInTheDocument();
+    expect(onlyBehindTip(/HTTP 500/)).toBe(true);
+    expect(moreAbout()).toHaveAccessibleDescription('worker said: HTTP 500 internal');
+  });
+
+  it('German: the heal failure says it in German', async () => {
+    cloudState = disconnected({ baseUrl: 'https://cloud.pendpost.app' });
+    healCloud.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider locale="de-CH">
+          <TooltipProvider>
+            <ConfirmProvider>
+              <Cloud />
+            </ConfirmProvider>
+          </TooltipProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: /verbindung wiederherstellen/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).not.toHaveTextContent(/HTTP/);
+    expect(screen.getByRole('button', { name: /mehr dazu/i })).toHaveAccessibleDescription('HTTP 500 internal');
   });
 });

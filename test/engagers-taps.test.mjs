@@ -47,6 +47,11 @@ const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); 
   const after1 = readEngager(loadState(), lane, commenter.author);
   ok(after1 && after1.exchangeCount === 1, 'read 1 stamped the commenter as a 1st exchange');
   ok(after1.exchanges[0].direction === 'they' && after1.exchanges[0].kind === 'comment', "the comment exchange is direction:'they', kind:'comment'");
+  const stPath = path.join(WS, 'state.json');
+  const onDisk = JSON.parse(fs.readFileSync(stPath, 'utf8'));
+  ok(onDisk.engagers && onDisk.engagers[engagerKey(lane, commenter.author)], 'read 1 PERSISTED the new stamp to state.json');
+  const sigOf = () => { const st = fs.statSync(stPath); return `${st.ino}:${st.size}:${st.mtimeMs}`; };
+  const sigBefore = sigOf();
 
   // Re-reading the SAME comments page is idempotent now the lane returns stable commentIds (a real
   // platform does): the same (kind, ref, direction) is one exchange, never a phantom double-count.
@@ -54,6 +59,10 @@ const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); 
   ok(r2.ok === true, 'listComments read 2 resolves ok:true');
   const after2 = readEngager(loadState(), lane, commenter.author);
   ok(after2.exchangeCount === 1, 're-reading the same comment is idempotent (stable ids, no phantom 2nd exchange)');
+  // 2026-10-13 stall: every comment read used to rewrite the whole state.json synchronously even
+  // when nothing changed. An idempotent re-read must leave the file alone (atomicWriteJson renames,
+  // so a rewrite always shows as a new inode).
+  ok(sigOf() === sigBefore, 'an idempotent re-read does NOT rewrite state.json');
 
   // The real 2nd exchange: replying to that commenter. read (they) + reply (me) on ONE comment ref
   // = exchangeCount 2 - the loop that lights the "2nd exchange" chip (BU-9).

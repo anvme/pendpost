@@ -30,7 +30,7 @@ let accountsData;
 let autonomyData;
 let healthData;
 
-vi.mock('../../lib/api.js', () => ({
+vi.mock('../../lib/api.js', async (importOriginal) => { const real = await importOriginal(); return {
   useConfig: () => ({ data: { ok: true, rev: CONFIG_REV, posting }, isLoading: false }),
   useAccounts: () => ({ data: accountsData }),
   usePendpostHealth: () => ({ data: healthData }),
@@ -44,12 +44,10 @@ vi.mock('../../lib/api.js', () => ({
   engageProbe: (...a) => engageProbeMock(...a),
   engageConfirmHandle: (...a) => engageConfirmHandleMock(...a),
   resumeLane: (...a) => resumeLaneMock(...a),
-  // Issue 7: the real humanize-by-code helper, mirrored here since this suite mocks the
-  // whole module - matches app/src/lib/api.js's own implementation exactly.
-  errText: (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
-    : err instanceof TypeError ? t('error.network')
-      : (err?.message || t(fallbackKey))),
-}));
+  // The REAL error helpers (the one plain path), never a stub that could drift from it.
+  errText: real.errText,
+  errAlert: real.errAlert,
+}; });
 
 function renderLedger(props = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -135,6 +133,18 @@ describe('autonomy ledger: the three lanes at a glance', () => {
     expect(screen.getByText(/you approve every post before it publishes/i)).toBeInTheDocument();
     // Scheduler running -> the 60-second cycle summary.
     expect(screen.getByText(/publish on a 60-second cycle/i)).toBeInTheDocument();
+  });
+
+  // Canon Tier 2: an "on" state is an all-clear, and the accent is chrome that never recolours
+  // a state. The judge saw a teal "Aktiv" pill here; on and off now share the neutral grey and
+  // differ by icon + word only.
+  it('an ON state pill is as grey as an OFF one (no accent, no green)', () => {
+    posting.autoApprove.enabled = true;
+    renderLedger();
+    const on = screen.getAllByText('On').map((el) => el.closest('span.rounded-full')).filter(Boolean);
+    const dry = screen.getAllByText('Dry run').map((el) => el.closest('span.rounded-full')).filter(Boolean);
+    expect(on.length + dry.length).toBeGreaterThan(0);
+    for (const pill of [...on, ...dry]) expect(pill.className).not.toMatch(/brand|emerald|green|teal/);
   });
 });
 
@@ -284,21 +294,41 @@ describe('S1 "Respond for me": one decision, three modes, one explainer', () => 
     renderLedger();
     await openRow(user, /respond for me/i);
     expect(screen.queryByRole('group', { name: /how much radar may answer for you/i })).not.toBeInTheDocument();
-    // and the row points on/off at the Radar page rather than pretending to own it here
-    expect(screen.getByText(/turn auto-reply on or off on the radar page/i)).toBeInTheDocument();
+    // r5: the row says what to do HERE (channels + limits), never "go to the Radar page",
+    // which sent the owner in a circle (Radar's overflow points here).
+    expect(screen.getByText(/^choose the channels pendpost may reply on for you and set the limits\.$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/radar page/i)).not.toBeInTheDocument();
   });
 
   it('the row summary reads the mode, the platform count and today in plain words', () => {
     posting.radar.engage.mode = 'live';
     renderLedger();
-    expect(screen.getByText(/Live · 3 platforms · posted 9 today, 1 need you/)).toBeInTheDocument();
+    expect(screen.getByText(/^3 platforms · posted 9 today, 1 need you/)).toBeInTheDocument();
   });
 
+  // D13 (phase 3): the pill carries the state word, once. A paused policy's pill reads
+  // "Paused" (the Radar strip's word), never "Live" beside a summary that says paused.
   it('a paused policy says so instead of claiming it is acting', () => {
     posting.radar.engage.mode = 'live';
     posting.radar.engage.paused = true;
     renderLedger();
-    expect(screen.getByText('Live · paused')).toBeInTheDocument();
+    const header = screen.getByRole('button', { name: /respond for me/i });
+    const pill = header.querySelector('span.rounded-full, span[class*="rounded-full"]');
+    expect(pill.textContent).toBe('Paused');
+    expect(pill.textContent).not.toMatch(/live/i);
+    // The summary says what paused means, without repeating the word the pill carries.
+    expect(screen.getByText('Nothing goes out until you resume.')).toBeInTheDocument();
+  });
+
+  // Q8: each state word once. The pill says Dry run / Off; the summary does not repeat it.
+  it('the dry-run and off summaries leave the mode word to the pill', () => {
+    posting.radar.engage.mode = 'dry_run';
+    const { unmount } = renderLedger();
+    expect(screen.getByText(/^3 platforms · would have posted \d+ today$/)).toBeInTheDocument();
+    unmount();
+    posting.radar.engage.mode = 'off';
+    renderLedger();
+    expect(screen.getByText('Radar only drafts.')).toBeInTheDocument();
   });
 
   it('with Radar off the row says so and carries the one link that fixes it (row 1e)', async () => {
@@ -321,21 +351,22 @@ describe('S1 "Respond for me": one decision, three modes, one explainer', () => 
     }
     posting.radar.engage.lanes = {};
     renderLedger();
-    expect(screen.getByText(/Dry run · no usable platforms/)).toBeInTheDocument();
+    // D13: the mode word sits in the pill only; the summary does not repeat it.
+    expect(screen.getByText(/^No usable platforms$/)).toBeInTheDocument();
+    expect(screen.queryByText(/Dry run · /)).toBeNull();
     await openRow(user, /respond for me/i);
-    await user.click(screen.getByRole('button', { name: /not available \(10\)/i }));
     const platformNames = ['Reddit', 'Mastodon', 'Bluesky', 'Hacker News', 'X', 'YouTube', 'Nostr', 'LinkedIn', 'Instagram', 'Quora'];
     for (const name of platformNames) expect(screen.getByRole('switch', { name })).toBeDisabled();
   });
 
   it('a failed lane save KEEPS the attempted value and Retry re-sends exactly it', async () => {
     const user = userEvent.setup();
-    saveConfigMock.mockImplementationOnce(() => Promise.reject(new Error('pendpost is not running')));
+    saveConfigMock.mockImplementationOnce(() => Promise.reject(new TypeError('Load failed')));
     renderLedger();
     await openRow(user, /respond for me/i);
     // Toggle a usable lane off - that write (saveEngage) is what fails.
     await user.click(screen.getByRole('switch', { name: 'Reddit' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/pendpost is not running/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not reach your local pendpost. Is it running?');
     // The attempted value survives the refusal - the switch shows the toggled state, not a revert.
     expect(screen.getByRole('switch', { name: 'Reddit' })).toHaveAttribute('aria-checked', 'false');
     await user.click(screen.getByRole('button', { name: /^retry$/i }));
@@ -351,18 +382,21 @@ describe('S1 "Respond for me": one decision, three modes, one explainer', () => 
 describe('S2 platform rows: one column, intent vs reality, one control per state line', () => {
   const openPlatforms = async (user) => { await openRow(user, /respond for me/i); };
 
-  it('lists usable-or-enabled platforms first and folds the rest behind one disclosure that opens in place', async () => {
+  // r5 (final2 judge): the old "Not available (n)" fold held rows that were only "Not checked
+  // yet", so its title lied about them, and the Radar deep link landed on it collapsed. One
+  // list sorted by state, each row with its own word, has no title that can disagree.
+  it('one list sorted by state, no "Not available" group, every row carries its own word', async () => {
     const user = userEvent.setup();
     renderLedger();
     await openPlatforms(user);
-    // reddit / mastodon / x / hackernews are usable or enabled; the other six are not.
-    expect(screen.getByRole('switch', { name: 'Reddit' })).toBeInTheDocument();
-    expect(screen.queryByRole('switch', { name: 'LinkedIn' })).not.toBeInTheDocument();
-    const disclosure = screen.getByRole('button', { name: /not available \(6\)/i });
-    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-    await user.click(disclosure);
-    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('switch', { name: 'LinkedIn' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /not available/i })).not.toBeInTheDocument();
+    const order = screen.getAllByRole('switch').map((el) => el.getAttribute('aria-label'))
+      .filter((n) => ['Reddit', 'Mastodon', 'Bluesky', 'Hacker News', 'X', 'YouTube', 'Nostr', 'LinkedIn', 'Instagram', 'Quora'].includes(n));
+    expect(order).toEqual(['Reddit', 'Mastodon', 'Hacker News', 'X', 'Bluesky', 'Nostr', 'LinkedIn', 'Quora', 'Instagram', 'YouTube']);
+    const word = (name) => screen.getByRole('switch', { name }).closest('div').textContent;
+    expect(word('Reddit')).toMatch(/Ready/);
+    expect(word('Nostr')).toMatch(/Not connected/);
+    expect(word('YouTube')).toMatch(/Not checked yet/);
   });
 
   it('Ready: the state line says so and the switch is live', async () => {
@@ -391,7 +425,6 @@ describe('S2 platform rows: one column, intent vs reality, one control per state
     const user = userEvent.setup();
     renderLedger();
     await openPlatforms(user);
-    await user.click(screen.getByRole('button', { name: /not available \(6\)/i }));
     expect(screen.getByText('Not checked yet')).toBeInTheDocument();
     expect(screen.queryByText('Checking…')).not.toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'YouTube' })).toBeDisabled();
@@ -405,7 +438,6 @@ describe('S2 platform rows: one column, intent vs reality, one control per state
     engageProbeMock.mockImplementationOnce(() => new Promise((res) => { release = () => res({ ok: true }); }));
     renderLedger();
     await openPlatforms(user);
-    await user.click(screen.getByRole('button', { name: /not available \(6\)/i }));
     await user.click(screen.getByRole('button', { name: /^check now$/i }));
     expect(await screen.findByText('Checking…')).toBeInTheDocument();
     release();
@@ -419,33 +451,63 @@ describe('S2 platform rows: one column, intent vs reality, one control per state
     const user = userEvent.setup();
     renderLedger();
     await openPlatforms(user);
-    await user.click(screen.getByRole('button', { name: /not available \(6\)/i }));
     expect(screen.getByText(/not logged in · log in to LinkedIn in chrome, then/i)).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'LinkedIn' })).toBeDisabled();
     await user.click(screen.getAllByRole('button', { name: /check again/i })[0]);
     await waitFor(() => expect(engageProbeMock).toHaveBeenCalledWith('linkedin'));
   });
 
-  it('Not connected: a Setup-card lane links to the RIGHT card; bluesky (no card) names its env var, never a dead Connect', async () => {
+  it('Not connected: a Setup-card lane links to the RIGHT card; bluesky (no card) never a dead Connect', async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
     renderLedger({ onNavigate });
     await openPlatforms(user);
-    await user.click(screen.getByRole('button', { name: /not available \(6\)/i }));
     // Fixture no_credential lanes: bluesky (no Setup card) + nostr (has one).
     expect(screen.getAllByText('Not connected')).toHaveLength(2);
     // Nostr connects to its own Setup card - never onNavigate('setup', undefined) (the old bug).
     await user.click(screen.getByRole('button', { name: /^connect$/i }));
     expect(onNavigate).toHaveBeenCalledWith('setup', 'nostr');
-    // Bluesky has no Setup card, so it names the env var instead of a dead Connect.
-    expect(screen.getByText(/BLUESKY_APP_PASSWORD/)).toBeInTheDocument();
+    // Bluesky has no Setup card: the row reads plain "Not connected", the technical name (the
+    // .env variable) sits behind the visible "?" trigger only, and the row's one next action is
+    // the Radar notice's route - "Copy .env lines" - so it is never a dead end (judge E1).
+    const row = screen.getByRole('switch', { name: 'Bluesky' }).closest('div');
+    expect(screen.queryByText(/BLUESKY_APP_PASSWORD/, { ignore: '.sr-only, script, style' })).not.toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: /copy config lines/i })).toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /more about this/i }));
+    await waitFor(() => expect(document.querySelector('[data-infotip-content]')).toHaveTextContent('BLUESKY_APP_PASSWORD'));
+  });
+
+  // final-a6: the reported split. Bluesky with no app password, never probed (reason
+  // 'checking'), read "Not checked yet" here while Radar said "Not connected" for it. The
+  // engine's credential fact now decides it, through the same judge Radar calls.
+  it('a lane with nothing stored reads "Not connected" before any probe, never "Not checked yet"', async () => {
+    const user = userEvent.setup();
+    engageRuntime.lanes.bluesky = { enabled: false, handle: '', usable: false, reason: 'checking', credential: 'none' };
+    renderLedger();
+    await openPlatforms(user);
+    const row = screen.getByRole('switch', { name: 'Bluesky' }).closest('div');
+    expect(within(row).getByText('Not connected')).toBeInTheDocument();
+    expect(within(row).queryByText('Not checked yet')).toBeNull();
+    expect(within(row).getByRole('button', { name: /copy config lines/i })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Bluesky' })).toBeDisabled();
+  });
+
+  it('a credential the Setup probe proved reads Ready with a live switch, and turning it on probes the lane', async () => {
+    const user = userEvent.setup();
+    engageRuntime.lanes.youtube = { enabled: false, handle: '', usable: false, reason: 'checking', credential: 'live' };
+    renderLedger();
+    await openPlatforms(user);
+    const sw = screen.getByRole('switch', { name: 'YouTube' });
+    expect(within(sw.closest('div')).getByText('Ready')).toBeInTheDocument();
+    expect(sw).toBeEnabled();
+    await user.click(sw);
+    await waitFor(() => expect(engageProbeMock).toHaveBeenCalledWith('youtube'));
   });
 
   it('Confirm account: the Yes/No confirm lives inline in the row (row 2e2)', async () => {
     const user = userEvent.setup();
     renderLedger();
     await openPlatforms(user);
-    await user.click(screen.getByRole('button', { name: /not available \(6\)/i }));
     expect(screen.getByText(/is @pend\.post the Acme account\?/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Yes' }));
     await waitFor(() => expect(engageConfirmHandleMock).toHaveBeenCalledWith('instagram', true));
@@ -455,7 +517,6 @@ describe('S2 platform rows: one column, intent vs reality, one control per state
     const user = userEvent.setup();
     renderLedger();
     await openPlatforms(user);
-    await user.click(screen.getByRole('button', { name: /not available \(6\)/i }));
     expect(screen.getByText(/logged in as @someone_else · switch Quora to the Acme account in chrome, then/i)).toBeInTheDocument();
     expect(screen.getByRole('switch', { name: 'Quora' })).toBeDisabled();
   });
@@ -489,7 +550,6 @@ describe('S2 platform rows: one column, intent vs reality, one control per state
     const user = userEvent.setup();
     const { invalidated } = renderLedger();
     await openPlatforms(user);
-    await user.click(screen.getByRole('button', { name: /not available \(6\)/i }));
     await user.click(screen.getAllByRole('button', { name: /check again/i })[0]);
     await waitFor(() => expect(invalidated.filter((k) => k === 'engage')).toHaveLength(1));
     await user.click(screen.getByRole('button', { name: 'Yes' }));
@@ -526,7 +586,11 @@ describe('S2 platform rows: one column, intent vs reality, one control per state
     renderLedger();
     await openRow(user, /respond for me/i);
     await user.click(screen.getByRole('switch', { name: 'Reddit' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/config changed since you read it/i);
+    // Raw-error sweep G1: the server's English line is the "?" description, never inline.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not save. Check that pendpost is running.');
+    expect(alert).not.toHaveTextContent(/config changed/i);
+    expect(rawBehindTip('config changed since you read it')).toBe(true);
     expect(fetchConfigMock).toHaveBeenCalledTimes(1);
   });
 
@@ -535,5 +599,70 @@ describe('S2 platform rows: one column, intent vs reality, one control per state
     renderLedger();
     await openPlatforms(user);
     expect(screen.getByText('@pendpost')).toBeInTheDocument();
+  });
+});
+
+// ---- r5 (final2 judge): the Radar deep link lands on lanes it can act on; subtitles wrap ----
+describe('r5 "Für mich antworten" landing and subtitles', () => {
+  it('the deep link from Radar (focus=engage) lands with every lane and its one action on screen, no click needed', () => {
+    const onNavigate = vi.fn();
+    renderLedger({ focus: 'engage', onNavigate });
+    expect(screen.getByRole('button', { name: /respond for me/i })).toHaveAttribute('aria-expanded', 'true');
+    // The connectable lanes read "Not connected" with their action, expanded, not folded away.
+    const nostr = screen.getByRole('switch', { name: 'Nostr' }).closest('div');
+    expect(within(nostr).getByText('Not connected')).toBeInTheDocument();
+    expect(within(nostr).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
+    const bluesky = screen.getByRole('switch', { name: 'Bluesky' }).closest('div');
+    expect(within(bluesky).getByRole('button', { name: /copy config lines/i })).toBeInTheDocument();
+  });
+
+  it('German: the row says what to do here, and no longer sends the owner back to Radar', async () => {
+    const user = userEvent.setup();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider locale="de-CH">
+          <ConfirmProvider><TooltipProvider><AutonomyLedger /></TooltipProvider></ConfirmProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: /für mich antworten/i }));
+    expect(screen.getByText('Wähle die Kanäle, auf denen pendpost für dich antworten darf, und setze die Limits.')).toBeInTheDocument();
+    expect(screen.queryByText(/Radar-Seite/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nicht verfügbar/)).not.toBeInTheDocument();
+  });
+
+  it('a row subtitle wraps instead of cutting mid-word at 375px', () => {
+    renderLedger();
+    const summary = screen.getByText('You approve every post before it publishes.');
+    expect(summary.className).not.toMatch(/\btruncate\b/);
+  });
+});
+
+// Raw-error sweep G1: every ledger failure is one plain sentence; the server's raw line rides the
+// shared "?" only, never inline.
+function rawBehindTip(raw) {
+  return screen.queryAllByRole('button', { name: /more about this/i })
+    .some((b) => document.getElementById(b.getAttribute('aria-describedby'))?.textContent === raw);
+}
+describe('AutonomyLedger - failures speak a plain sentence, raw line behind the "?"', () => {
+  it('a failed scheduler toggle says the save sentence; the English server line is only the "?"', async () => {
+    const user = userEvent.setup();
+    setSchedulerRunningMock.mockImplementationOnce(() => Promise.reject(new Error('HTTP 500 internal')));
+    renderLedger();
+    await user.click(screen.getByRole('switch', { name: /stop scheduler/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not save, try again');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(rawBehindTip('HTTP 500 internal')).toBe(true);
+  });
+
+  it('a message-less failure still leaves the plain sentence, with no "?"', async () => {
+    const user = userEvent.setup();
+    setSchedulerRunningMock.mockImplementationOnce(() => Promise.reject(new Error()));
+    renderLedger();
+    await user.click(screen.getByRole('switch', { name: /stop scheduler/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save, try again');
+    expect(screen.queryByRole('button', { name: /more about this/i })).toBeNull();
   });
 });

@@ -31,12 +31,6 @@ vi.mock('../../lib/api.js', () => ({
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
   lintText: (...a) => lintText(...a),
-  // Faithful stub of the real errText: bulk-approve now localizes each failure
-  // reason through it (timeout/network get their strings, a server/engine message
-  // passes through) before folding it into the summary.
-  errText: (err, tt, fk) => (err?.code === 'timeout' ? tt('error.timeout')
-    : err instanceof TypeError ? tt('error.network')
-      : (err?.message || (fk ? tt(fk) : ''))),
   // Spec 37: Freigaben reads the setup signal (reddit warmth) for the per-card tier cue.
   // These posts are non-reddit, so the tier is always approved-auto (no manual cue).
   usePendpostHealth: () => ({ data: null }),
@@ -384,9 +378,12 @@ describe('Freigaben bulk approve', () => {
 
     // Both posts were attempted and the run settled (the old bug never got here).
     await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(2));
-    // The summary names the failed post AND why, not a bare id.
+    // The summary names the failed post; WHY (the server's own English line) rides the
+    // "?" beside it, never the bar itself.
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/p3 \(Mastodon still processing the media\)/);
+    expect(alert.textContent).toMatch(/1 failed: p3$/);
+    expect(alert.textContent).not.toMatch(/Mastodon still processing/);
+    expect(within(bar).getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('p3: Mastodon still processing the media');
     // The button recovered out of the loading state (no spinner label lingers).
     await waitFor(() => expect(screen.queryByText(/Approving/)).not.toBeInTheDocument());
     // The failed post stays selected for a retry; the succeeded one is dropped.

@@ -6,6 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-14
+
+This release is about signal over noise. Radar now finds people who actually need you instead of every comment that happens to contain a keyword, and it learns from one tap. pendpost stops crying wolf: a message reaches you only when pendpost cannot fix the problem itself, and it names the one fix. LinkedIn and X sign-ins renew themselves well ahead of expiry, including in the always-on cloud. Every error in the Studio now reads as a plain sentence, with the raw technical line one tap away behind a "?".
+
+### Added
+- A relevance judge for Radar's keyword lanes. Candidates from Hacker News, Mastodon, Bluesky, and Reddit go to a small, fast model together with your audience, the search's brief, and your past feedback. It keeps real people asking, evaluating, or complaining, and drops vendors, bots, news relays, happy users, and off-topic posts. Without an AI provider, or when the judge fails, candidates stay below the visible threshold instead of flooding the feed.
+- Pre-filters before anything reaches the Radar feed. A search phrase must appear as a phrase, within a few words, and bots, relay domains, muted authors, your own accounts, wrong-language posts, and duplicates are dropped. Each scan reports what it dropped and why.
+- One-tap "Not relevant" on every Radar row, with Undo. The post becomes a negative example for its search, and two taps on the same author or domain mute it (never a shared host such as a large Mastodon instance). The "By search" view now shows how relevant each search is.
+- A Radar query tuner. After five "Not relevant" taps on one search, or weekly, it reviews that search and applies narrowing changes itself: exclude words, mutes, a higher minimum score, or pausing a search that finds almost nothing. Every change is logged and can be undone. Broadening changes, such as new keywords or channels, arrive as a suggestion you apply or dismiss. Agents get the same controls through the `radar_tune` tool.
+- Reddit in Radar without connecting an account. An unconnected Reddit lane reads Reddit's public search feed, read-only and gently paced, and replies there become copy-paste drafts.
+- Opt-in LinkedIn Community Management scopes per brand. Set `LINKEDIN_CMA=1` in a brand's `.env` when your LinkedIn app holds the Community Management product, and sign-in asks for the statistics and comment scopes, which opens LinkedIn statistics and comment reads. It stays off by default, because LinkedIn refuses the whole sign-in for a scope the app lacks.
+- A terminal sign-in now reaches the running pendpost and the cloud vault. After `auth` for LinkedIn, X, Meta, Telegram, Discord, or Nostr, pendpost rechecks that lane at once and a cloud-managed brand is resealed, instead of the cloud keeping the old token until a later check.
+
+- The cloud icon in the header lists each cloud problem with its one fix (Neu verbinden, open the post, or check again), across every always-on project, and the Cloud page pill tells the same story. A failure for a post you have since moved into the future no longer shows.
+- Steer Radar from a signal row: "Mehr davon" and "Weniger davon" teach the agent scan by example, and the search chip opens that search to edit or remove.
+- Every status and technical detail in the Studio sits behind one tappable "?" that works with a finger or a keyboard, and every measured button and link has a 44px target.
+
+### Changed
+- LinkedIn sign-ins renew 14 days ahead of expiry instead of 5, X sign-ins now renew on a daily check too, and the cloud reseals right after. The LinkedIn refresh token, its expiry, and the app's client id are now sealed into the cloud vault, so the always-on cloud can renew LinkedIn by itself. A sign-in expiry shows in Setup only when a lane cannot renew itself, and a refresh that fails keeps the still-valid token.
+- Insights stops crying wolf. Each platform is checked on its own, a loop stops at the first lane-wide refusal, and a state is logged only when it changes. A LinkedIn post with no activity yet reads as no data rather than a failure, a statistics refusal caused by your Page role says to ask for the admin role rather than claiming a missing scope, and a Meta post deleted on the platform reads as gone, not as a lane error.
+- Radar budget and usage-limit skips are neutral notes, not failures, and repeating engine crash rows are de-duplicated.
+- Radar matching is friendlier to German and Swiss spellings: ß and umlauts fold together in keywords and exclude words, Hacker News searches each keyword as an exact phrase, and Bluesky searches honour the query language.
+- A cloud push whose confirmation never arrives now turns amber after ten minutes, so posts quietly going out from your computer instead of the cloud are visible. A cloud sync that is healing reads as a wait, not a warning.
+- Approving a post on a platform you skipped at onboarding and never connected is refused with the fix ("Connect it in Setup or remove it from the post"), instead of failing later at publish.
+- The overdue and failed chip counts late posts in every project, not only the one you are viewing, and a click opens the all-projects view when the late post lives elsewhere.
+- Red now means act now. A failure pendpost retries by itself reads neutral on the planner card, the List row, the post banner, and Radar's lane rows, and only something you have to fix stays red.
+- On a phone the Planner opens on the List. Week and month are one tap away and scroll inside their own box, so the page never scrolls sideways.
+- A post chip in the month view shows its status word on hover and keyboard focus, and a tap still opens the post.
+- Key-based lanes such as Nostr reconnect in place: "Neu verbinden" opens the key form right in the card without disconnecting first, and a bad key and unreachable relays each get their own plain sentence.
+- Radar's auto-reply panel folds into one line above the feed once your reply channels are ready.
+- Status pills and the next-step chip on approval cards no longer keep information in a hover-only tooltip that a phone or keyboard cannot reach.
+- The website got a light motion pass: the hero animation and background film pause when off screen, menus and the download tabs fade and slide in, the agents loop reveals step by step on scroll, cards lift slightly on hover, and every copy button shares one helper with a check-mark confirmation.
+
+### Fixed
+- Mastodon replies to posts that Radar found on another instance are resolved on your home instance before replying, thread links never pair your home host with another instance's post id, and a failed lookup stays retryable instead of marking the target as gone for good. A Mastodon Radar reply is owed only once it is due.
+- Timeouts, rate limits, and server errors from a platform (408, 429, 5xx) are treated as temporary and no longer count toward parking a post. An Instagram processing hiccup reads as temporary, not as a rejected post, and the Instagram upload step is named when it fails.
+- Raw error sweep across the Studio. Approvals, Planner, post detail and row actions, Composer, thread composer, Setup, Radar feed and settings, comment inbox, Activity, Insights, review links, the autonomy ledger, the client switcher, and first run now say a plain sentence when something fails, with the raw server line behind a "?" instead of in a toast, a hover title, or a raw locale key. A test guard fails any component that renders a raw error line.
+- A failed cloud copy after a reconnect has its own message and fix, rejected posts read as inactive, the pending count is correct, and posts that owe no media no longer report media as missing.
+- Rescheduling, editing, or re-approving a post clears its old failure, so a post you fixed no longer shows yesterday's error.
+- A malformed Nostr signing key parks the post with a reconnect action instead of retrying it.
+- A saved or removed cloud spend cap closes its editor and refreshes the meter.
+- When pendpost cannot reach the cloud, the log and the cloud status name the network cause (for example a failed DNS lookup or a connect timeout) instead of a bare "fetch failed".
+- The cloud backstop never re-fires a post the cloud already has. When pendpost cannot get an answer from the cloud about a post the cloud acknowledged, it waits instead of publishing it from your computer, so a post the cloud already sent cannot go out twice. The wait shows in Activity, and after two hours the post asks you to check the cloud connection. Posts the cloud never received still go out locally as before.
+- A burst of Studio requests can no longer stall pendpost for minutes. Reads no longer rewrite the state file or re-parse the config, and the plan views are reused between saves.
+- Insights says when a platform has not refreshed for more than two days, on the Insights page and in the nightly summary, instead of logging it once and going quiet. A sweep that runs while the computer is offline records nothing and runs again once the network is back.
+- Touch targets in the Planner's month view, including the "+n more" button, meet 24px on a mouse and 44px on touch, and the blocked line on an approval card wraps cleanly on a narrow phone.
+
+- Posts that keep failing park sooner and say why: engine crashes, silent skips and blocked rows now count toward the three-attempt cap, and content errors stop after the first failure.
+- A local credential failure waits for you with "Neu verbinden" instead of retrying three times, and a passing check releases it.
+- A post rescheduled into the future is never fired from an old cloud job, the cloud refuses a delivery whose time no longer matches, and a cloud run that published nothing is no longer recorded as a failure.
+- Signed publish receipts survive numeric platform error codes, and one failing platform no longer drops the receipts of the others.
+- Reddit posts that cannot pass Reddit's pre-submit checks become a visible failure instead of being skipped quietly.
+
+### Dependencies
+- Cleared every open npm audit advisory in the app, website, and video toolchains with lockfile-only updates. None of these reach the published engine, which has no runtime dependencies.
+- The app moves to React 19.3 and Vite 8.3, the website to Astro 7.3, and the test setup to jest-axe 11. The website's caching and image libraries were updated to clear two high advisories.
+
 ## [2.6.1] - 2026-09-23
 
 This release cleans up Radar's feed and adds honest comparison pages to the website.

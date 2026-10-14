@@ -72,11 +72,12 @@ describe('InteractiveFields (FR4 authoring)', () => {
 
   it('labels mention as API-supported and a poll as preview-only (honest applicability)', () => {
     renderPanel({ stickers: [{ kind: 'mention', handle: '@acme' }] });
-    expect(screen.getByText('API: supported')).toBeInTheDocument();
-    expect(screen.queryByText(/preview-only/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Instagram: supported')).toBeInTheDocument();
+    expect(screen.queryByText(/preview only/i)).not.toBeInTheDocument();
 
     renderPanel({ stickers: [{ kind: 'link', url: '', label: '' }] });
-    expect(screen.getByText(/preview-only/i)).toBeInTheDocument();
+    // The chip word names it; the hint (which also says "preview-only") is its description.
+    expect(screen.getByRole('button', { name: /Instagram: preview only/i })).toHaveAccessibleDescription(/add this sticker by hand/i);
   });
 
   it('shows the inherited global presets read-only in global mode', () => {

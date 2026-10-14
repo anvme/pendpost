@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -86,9 +86,22 @@ describe('CommentInbox enable flow', () => {
     const user = userEvent.setup();
     renderInbox();
     await user.click(screen.getByRole('button', { name: 'Turn on monitoring' }));
-    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    const alert = await screen.findByRole('alert');
+    // One plain sentence; the server's English line rides the "?" only.
+    expect(alert).toHaveTextContent('That did not go through. Try again.');
+    expect(alert).not.toHaveTextContent(/config changed/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('config changed since you read it - re-read and retry');
     // A failed enable must not have forced a sweep.
     expect(refreshCommentInbox).not.toHaveBeenCalled();
+  });
+
+  it('a message-less enable failure still leaves the plain sentence as the alert', async () => {
+    saveConfig.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderInbox();
+    await user.click(screen.getByRole('button', { name: 'Turn on monitoring' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That did not go through. Try again.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
   });
 
   it('the enable button is disabled until config has loaded (never clickable-but-inert)', async () => {
@@ -128,9 +141,12 @@ describe('CommentInbox row: like + open-on-platform', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Undo like' })).toBeInTheDocument());
 
     // a rejected like reverts the pressed state and surfaces an error
-    reactToPost.mockRejectedValueOnce(new Error('nope'));
+    reactToPost.mockRejectedValueOnce(new Error('HTTP 500 internal'));
     await user.click(screen.getByRole('button', { name: 'Undo like' }));
-    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('That did not go through. Try again.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
     expect(screen.getByRole('button', { name: 'Undo like' })).toBeInTheDocument();
   });
 
@@ -145,6 +161,37 @@ describe('CommentInbox row: like + open-on-platform', () => {
     // No confirm affordance appears; the resolve write fires straight away.
     expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
     await waitFor(() => expect(resolveInboxComment).toHaveBeenCalledWith('x1', 'dismissed', undefined));
+  });
+
+  it('a failed Mark handled says the plain sentence; the raw server line rides the "?" only', async () => {
+    configResult = ENABLED;
+    inboxResult = { data: { posts: [group()], lastSweep: 'x' }, isLoading: false, refetch: vi.fn() };
+    resolveInboxComment.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    renderInbox();
+    await user.click(screen.getByRole('button', { name: 'Mark handled' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('That did not go through. Try again.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
+  });
+
+  it('all projects: a failed Mark handled says the plain sentence, raw line behind the "?"', async () => {
+    resolveInboxComment.mockRejectedValueOnce(new Error('HTTP 500 internal'));
+    const user = userEvent.setup();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider locale="en">
+          <CommentInbox allClients allPosts={[group({ clientId: 'acme', clientName: 'Acme' })]} />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Mark handled' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('That did not go through. Try again.');
+    expect(alert).not.toHaveTextContent(/HTTP 500/);
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('HTTP 500 internal');
   });
 
   // Non-happy path: a fast double-click must not dispatch the resolve twice. While the write is
@@ -168,5 +215,44 @@ describe('CommentInbox row: like + open-on-platform', () => {
       comments: [{ commentId: 'ig1', lane: 'meta', author: 'a_fan', text: 'love it', ts: '2026-08-09T10:00:00Z', permalink: null }] })], lastSweep: 'x' }, isLoading: false, refetch: vi.fn() };
     renderInbox();
     expect(screen.queryByRole('button', { name: /^Like$/ })).not.toBeInTheDocument();
+  });
+});
+
+// Raw-error sweep G3: the degrade row's and the unavailable-lane chip's "?" used Tip, which opens
+// on hover or keyboard focus only, so a touch user could not read why. They are the shared InfoTip
+// now: a tap pins the bubble, and the reason is the trigger's accessible description throughout.
+describe('CommentInbox "?" reasons are reachable by tap', () => {
+  const bubble = () => document.querySelector('[data-infotip-content]');
+  it('a degraded lane row: the "?" is an InfoTip that a tap opens', async () => {
+    configResult = ENABLED;
+    inboxResult = { data: { posts: [], lastSweep: 'x', sources: { mastodon: { ok: false, error: 'needs_scope' } } }, isLoading: false, refetch: vi.fn() };
+    renderInbox();
+    const why = 'The Mastodon connection is not allowed to read comments right now. Reconnect the platform and grant the read permission.';
+    const trigger = screen.getByRole('button', { name: /more about this/i });
+    expect(trigger).toHaveAccessibleDescription(why);
+    fireEvent.pointerEnter(trigger, { pointerType: 'touch' });
+    fireEvent.click(trigger);
+    await waitFor(() => expect(bubble()).toHaveTextContent(why));
+  });
+
+  it('an unavailable lane in settings: the "?" is an InfoTip that a tap opens', async () => {
+    configResult = ENABLED;
+    inboxResult = { data: { posts: [], lastSweep: 'x', capabilities: { linkedin: { readAvailable: false, readBlocked: 'linkedin_cma_pending' } } }, isLoading: false, refetch: vi.fn() };
+    const user = userEvent.setup();
+    renderInbox();
+    await user.click(screen.getByRole('button', { name: 'Monitoring settings' }));
+    const trigger = screen.getByRole('button', { name: /more about this/i });
+    expect(trigger).toHaveAccessibleDescription(/does not let pendpost read comments yet/);
+    fireEvent.click(trigger);
+    await waitFor(() => expect(bubble()).toHaveTextContent(/does not let pendpost read comments yet/));
+  });
+
+  it('an unavailable lane with a reason code the locale does not know reads the generic sentence, never a raw key', async () => {
+    configResult = ENABLED;
+    inboxResult = { data: { posts: [], lastSweep: 'x', capabilities: { linkedin: { readAvailable: false, readBlocked: 'brand_new_code' } } }, isLoading: false, refetch: vi.fn() };
+    const user = userEvent.setup();
+    renderInbox();
+    await user.click(screen.getByRole('button', { name: 'Monitoring settings' }));
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('This platform cannot read comments yet.');
   });
 });

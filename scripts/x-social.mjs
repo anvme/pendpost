@@ -64,6 +64,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { handOffAfterCeremony } from '../lib/cli-cloud-handoff.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { measurableInsightsPosts } from '../lib/insights-window.mjs';
@@ -72,7 +73,7 @@ import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { oauth1Header } from '../lib/x-oauth1.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure, isFetchFailure } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -234,6 +235,10 @@ async function ensureFreshToken({ force = false } = {}) {
       { auth: basicAuthHeader() },
     );
   } catch (err) {
+    // Offline (DarkWake, no network) is not an expired refresh token: say we could not reach
+    // X, with the cause, so neither the insights sweep nor the publish hold reads it as a
+    // sign-in problem.
+    if (isFetchFailure(err)) throw new Error(`X could not reach X to renew access: ${describeFetchFailure(err)}`);
     throw new Error(`X token refresh failed (${err.message}). The refresh token likely expired or was rotated out - re-run 'node scripts/x-social.mjs auth'.`);
   }
   const vars = persistTokens(data);
@@ -946,7 +951,7 @@ async function cmdInsights(args) {
       RUN.results.push({ postId: post.id, platform: 'x', action: 'insights', ok: true, id: post.xPostId, metrics });
       console.log(`[ok] ${post.id}: X ${JSON.stringify(metrics)}`);
     } catch (err) {
-      RUN.results.push({ postId: post.id, platform: 'x', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+      RUN.results.push({ postId: post.id, platform: 'x', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) });
       console.log(`[warn] ${post.id}: X insights failed - ${err.message}`);
     }
   }
@@ -1320,6 +1325,8 @@ async function main() {
     process.exit(2);
   }
   await cmd(args);
+  // A hand-run ceremony hands the new sign-in to the running pendpost (recheck + cloud reseal).
+  await handOffAfterCeremony({ command: args._[0], lane: 'x', results: RUN.results });
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
@@ -1328,7 +1335,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }

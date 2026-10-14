@@ -25,6 +25,7 @@ const saveConfigMock = vi.fn(() => Promise.resolve({ ok: true }));
 vi.mock('../../lib/api.js', () => ({
   // WP6: Setup reads the radar capability table for the per-card scan switch
   useSignals: () => ({ data: undefined, isLoading: false }),
+  usePlans: () => ({ data: undefined }),
   usePendpostHealth: () => ({
     data: {
       ok: true, ready: false,
@@ -84,6 +85,13 @@ function renderSetup() {
       </TooltipProvider>
     </QueryClientProvider>,
   );
+}
+
+// What the owner reads: the InfoTip's sr-only description (the raw line) is not on screen.
+function visibleText(el) {
+  const c = el.cloneNode(true);
+  c.querySelectorAll('.sr-only').forEach((n) => n.remove());
+  return c.textContent;
 }
 
 async function expandPinterestCard() {
@@ -148,7 +156,30 @@ describe('Setup — Pinterest BoardManager (spec 29)', () => {
     renderSetup();
     const user = await expandPinterestCard();
     await user.click(screen.getByRole('button', { name: 'Set as destination: DIY' }));
-    await waitFor(() => expect(screen.getByText('config changed since you read it - re-read and retry')).toBeInTheDocument());
+    // One plain sentence is the alert; the server's English line only rides the "?".
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Could not save this value.'));
+    expect(screen.getByText('config changed since you read it - re-read and retry')).toHaveClass('sr-only');
+  });
+
+  it('a failed "New board" names the expired connection in plain words, never the raw HTTP line', async () => {
+    createPinterestBoardMock.mockRejectedValueOnce(new Error('pinterest: POST /v5/boards: HTTP 401 - Unauthorized'));
+    const { container } = renderSetup();
+    const user = await expandPinterestCard();
+    await user.type(screen.getByLabelText('Name'), 'Launch Boards');
+    await user.click(screen.getByRole('button', { name: 'New board' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('The connection has expired. Reconnect Pinterest.'));
+    expect(visibleText(container)).not.toMatch(/HTTP 401|POST \/v5/);
+  });
+
+  it('a failed "Add section" says one plain sentence, never the raw engine line', async () => {
+    createPinterestBoardSectionMock.mockRejectedValueOnce(new Error('listen EADDRINUSE :::8090'));
+    const { container } = renderSetup();
+    const user = await expandPinterestCard();
+    await user.click(screen.getByRole('button', { name: /Recipes/ }));
+    await user.type(screen.getByLabelText('Section name'), 'Spring');
+    await user.click(screen.getByRole('button', { name: 'Add section' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Could not save. Reload and try again.'));
+    expect(visibleText(container)).not.toMatch(/EADDRINUSE/);
   });
 
   it('shows the boards-authorization gap when "Set as destination" fails with not_configured', async () => {
@@ -156,7 +187,7 @@ describe('Setup — Pinterest BoardManager (spec 29)', () => {
     renderSetup();
     const user = await expandPinterestCard();
     await user.click(screen.getByRole('button', { name: 'Set as destination: DIY' }));
-    await waitFor(() => expect(screen.getByText('Managing boards needs a new authorization (the boards:write scope) - use the reconnect button on this card.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Managing boards needs a new authorization (the boards:write scope). Use the reconnect button on this card.')).toBeInTheDocument());
   });
 
   // Spec 29 review (net-simplify #2): BoardManager is now the SOLE pinterestBoardId
@@ -190,7 +221,7 @@ describe('Setup — Pinterest BoardManager (spec 29)', () => {
     const user = await expandPinterestCard();
     await user.type(screen.getByLabelText('Name'), 'Blocked');
     await user.click(screen.getByRole('button', { name: 'New board' }));
-    await waitFor(() => expect(screen.getByText('Managing boards needs a new authorization (the boards:write scope) - use the reconnect button on this card.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Managing boards needs a new authorization (the boards:write scope). Use the reconnect button on this card.')).toBeInTheDocument());
     // the read-only list is still shown (P9: a missing WRITE scope never hides the READ).
     expect(screen.getByText('Recipes')).toBeInTheDocument();
   });
@@ -215,7 +246,7 @@ describe('Setup — Pinterest BoardManager (spec 29)', () => {
     await user.click(screen.getByRole('button', { name: /Recipes/ }));
     await user.type(screen.getByLabelText('Section name'), 'Spring');
     await user.click(screen.getByRole('button', { name: 'Add section' }));
-    await waitFor(() => expect(screen.getByText('Managing boards needs a new authorization (the boards:write scope) - use the reconnect button on this card.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Managing boards needs a new authorization (the boards:write scope). Use the reconnect button on this card.')).toBeInTheDocument());
   });
 
   // Canon (no irrelevant fields, no dead ends): while the sections read fails, an
@@ -231,11 +262,13 @@ describe('Setup — Pinterest BoardManager (spec 29)', () => {
     // The dead controls are gone, not just disabled-looking.
     expect(screen.queryByLabelText('Section name')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add section' })).not.toBeInTheDocument();
-    // The notice's action triggers the existing disconnect machinery (confirm gate included).
+    // The notice's action triggers the existing disconnect machinery (confirm gate included),
+    // but the confirm asks what the owner clicked: reconnect, never "Disconnect Pinterest?".
     await user.click(screen.getByRole('button', { name: 'Reconnect Pinterest' }));
-    expect(await screen.findByText('Disconnect Pinterest?')).toBeInTheDocument();
-    // Scope to the dialog: the card footer carries its own "Disconnect" button too.
-    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Disconnect' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Reconnect Pinterest?')).toBeInTheDocument();
+    expect(dialog.queryByText('Disconnect Pinterest?')).toBeNull();
+    await user.click(dialog.getByRole('button', { name: 'Reconnect' }));
     const api = await import('../../lib/api.js');
     await waitFor(() => expect(api.disconnectPlatform).toHaveBeenCalledWith('pinterest'));
   });

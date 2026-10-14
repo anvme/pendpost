@@ -2,16 +2,17 @@ import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   MessageSquare, RefreshCw, Settings as SettingsIcon, CornerDownRight, ExternalLink,
-  AlertCircle, ShieldAlert, Check, Inbox, Heart, HelpCircle, Loader2,
+  AlertCircle, ShieldAlert, Check, Inbox, Heart, Loader2,
 } from 'lucide-react';
 import { useConfig, useCommentInbox, refreshCommentInbox, resolveInboxComment, saveConfig, reactToPost } from '../../lib/api.js';
 import { fmtRelative } from '../../lib/format.js';
 import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY, PLATFORM_META, Skeleton } from '../ui.jsx';
 import { PROJECT_CHIP } from '../ui/recipes.js';
 import { ClientAvatar } from '../ClientSwitcher.jsx';
-import { Tip } from '../ui/Tooltip.jsx';
 import CommentsPanel from '../CommentsPanel.jsx';
 import { useT } from '../../lib/i18n.js';
+import { humanizeAction } from '../../lib/failureCopy.js';
+import InfoTip from '../ui/InfoTip.jsx';
 
 // The Radar "On your posts" segment: the own-post comment inbox. It reuses the exact
 // listComments/replyToComment seam (via CommentsPanel) for each post's thread; this component
@@ -26,6 +27,21 @@ const LANE_LABEL = {
   reddit: 'Reddit', tiktok: 'TikTok', telegram: 'Telegram', mastodon: 'Mastodon',
   nostr: 'Nostr', discord: 'Discord',
 };
+
+// A failed inbox action is { text, raw }: one plain sentence, with the server's or the
+// platform's raw line behind the "?" only, never inline. `lane` only when a platform answered.
+const inboxAlert = (err, t, lane = null) => humanizeAction(err, t, { fallbackKey: 'comments.inbox.error', lane });
+function ActionError({ error, small = false, className = '' }) {
+  if (!error) return null;
+  return (
+    <div className={`flex items-start gap-1 ${className}`}>
+      <p role="alert" className={`flex items-center gap-1.5 text-red-600 dark:text-red-300 ${small ? 'text-[11px]' : 'text-xs'}`}>
+        <AlertCircle size={small ? 11 : 13} aria-hidden="true" /> {error.text}
+      </p>
+      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
+    </div>
+  );
+}
 
 // One post row: the post's platform glyph + caption, an unanswered/new count, the latest
 // comment preview, a primary Reply (expands the thread) and a quiet "Mark handled" overflow.
@@ -59,7 +75,7 @@ function PostRow({ group, isNew, onResolveAll, onReplied, t }) {
       await reactToPost(group.campaign, group.postId, latest.commentId, likeVerb, group.platform, undefined, !next, latest.author, group.clientId);
     } catch (e) {
       setLiked(!next);
-      setLikeError(e?.message || t('comments.inbox.error'));
+      setLikeError(inboxAlert(e, t, group.platform || null));
     } finally {
       setLiking(false);
     }
@@ -150,11 +166,7 @@ function PostRow({ group, isNew, onResolveAll, onReplied, t }) {
           <CornerDownRight size={13} aria-hidden="true" /> {open ? t('comments.inbox.close') : t('comments.inbox.reply')}
         </button>
       </div>
-      {likeError ? (
-        <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-          <AlertCircle size={11} aria-hidden="true" /> {likeError}
-        </p>
-      ) : null}
+      <ActionError error={likeError} small />
       {open ? (
         <div className="border-t border-zinc-900/5 pt-2 dark:border-white/10">
           <CommentsPanel campaign={group.campaign} postId={group.postId} clientId={group.clientId} onReplied={onReplied(group)} />
@@ -211,7 +223,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
         .catch(() => { /* the scheduler sweep will still populate the inbox */ });
     } catch (e) {
       qc.invalidateQueries({ queryKey: ['config'] });
-      setError(e?.message || t('comments.inbox.error'));
+      setError(inboxAlert(e, t));
     } finally {
       setWriting(false);
     }
@@ -220,11 +232,11 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
     setBusy(true);
     setError(null);
     try { await refreshCommentInbox(); await refetch?.(); qc.invalidateQueries({ queryKey: ['commentInbox'] }); }
-    catch (e) { setError(e?.message || t('comments.inbox.error')); }
+    catch (e) { setError(inboxAlert(e, t)); }
     finally { setBusy(false); }
   };
   const invalidateInbox = () => qc.invalidateQueries({ queryKey: ['commentInbox'] });
-  const surfaceError = (e) => setError(e?.message || t('comments.inbox.error'));
+  const surfaceError = (e) => setError(inboxAlert(e, t));
   // A reply handled the comment: mark it resolved by its cached key (looked up by commentId so
   // the right lane's key is used even on a multi-lane post), then refresh the inbox count.
   const onReplied = (group) => (commentId) => {
@@ -257,11 +269,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
             ))}
           </div>
         ) : null}
-        {error ? (
-          <p role="alert" className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs text-red-600 dark:text-red-300">
-            <AlertCircle size={13} aria-hidden="true" /> {error}
-          </p>
-        ) : null}
+        <ActionError error={error} className="rounded-xl px-3 py-2" />
         {allLoading ? (
           <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-16 rounded-xl" />)}</div>
         ) : merged.length ? (
@@ -303,11 +311,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
           </button>
           {/* A failed enable answers what happened with a retryable message, never a silent
               no-op (canon: no dead ends). The off-state returns early, so it needs its own. */}
-          {error ? (
-            <p role="alert" className="flex items-center justify-center gap-1.5 text-xs text-red-600 dark:text-red-300">
-              <AlertCircle size={13} aria-hidden="true" /> {error}
-            </p>
-          ) : null}
+          <ActionError error={error} className="justify-center" />
         </div>
       </div>
     );
@@ -319,7 +323,13 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
   // monitored and never nag in the feed; the settings list shows them greyed with the reason so
   // the owner knows the platform is off the sweep on purpose, not silently broken.
   const blockedLanes = Object.entries(data?.capabilities || {}).filter(([, c]) => c && c.readAvailable === false);
-  const blockedReason = (code) => t(code ? `comments.inbox.blocked.${code}` : 'comments.inbox.blocked.generic');
+  // t() returns the KEY itself for a missing string (lib/i18n.js makeT): a reason code the locale
+  // does not know yet reads as the generic sentence, never as "comments.inbox.blocked.<code>".
+  const blockedReason = (code) => {
+    const key = `comments.inbox.blocked.${code}`;
+    const text = code ? t(key) : key;
+    return text !== key ? text : t('comments.inbox.blocked.generic');
+  };
 
   return (
     <div className="space-y-3">
@@ -341,11 +351,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
 
       {/* A failed refresh/resolve answers what went wrong with a retry-in-place, never a silent
           swallow (canon: no dead ends). */}
-      {error ? (
-        <p role="alert" className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs text-red-600 dark:text-red-300">
-          <AlertCircle size={13} aria-hidden="true" /> {error}
-        </p>
-      ) : null}
+      <ActionError error={error} className="rounded-xl px-3 py-2" />
 
       {/* Settings disclosure: cadence + rolling window + the off switch. Prefilled defaults. */}
       {settingsOpen ? (
@@ -371,7 +377,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
           </div>
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('comments.inbox.setting.hint')}</p>
           {/* Platforms whose comment read cannot run yet: greyed, non-actionable, with the reason
-              on a focus-reachable tooltip - honest instead of a broken feed banner (owner: KISS). */}
+              behind the shared InfoTip "?" (hover, tap or keyboard) - honest instead of a broken feed banner (owner: KISS). */}
           {blockedLanes.length ? (
             <div className="space-y-1.5">
               <span className={EYEBROW}>{t('comments.inbox.setting.unavailable')}</span>
@@ -383,11 +389,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
                   return (
                     <span key={lane} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 opacity-70 ring-1 ring-zinc-900/10 dark:text-zinc-400 dark:ring-white/10">
                       <LGlyph size={12} aria-hidden="true" /> {LANE_LABEL[lane] || lane}
-                      <Tip label={why}>
-                        <button type="button" aria-label={why} className="text-zinc-500 transition hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
-                          <HelpCircle size={12} aria-hidden="true" />
-                        </button>
-                      </Tip>
+                      <InfoTip label={why} />
                     </span>
                   );
                 })}
@@ -400,7 +402,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
       {/* Per-lane degrade for GENUINE, fixable failures only (structurally-unavailable lanes like
           LinkedIn are skipped by the sweep and greyed in settings instead - never nagged here).
           The message + recovery are keyed to the reason (canon: errors say what happened, why, and
-          the one action that recovers), with the "why" on a real focus-reachable tooltip. */}
+          the one action that recovers), with the "why" behind the shared InfoTip "?" (a tap pins it). */}
       {degraded.map(([lane, s]) => {
         const label = LANE_LABEL[lane] || lane;
         const isScope = s.error === 'needs_scope';
@@ -410,11 +412,7 @@ export default function CommentInbox({ onNavigate, allClients = false, allPosts 
           <div key={lane} className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs ${INNER_SURFACE}`}>
             <ShieldAlert size={13} className="text-amber-700 dark:text-amber-300" aria-hidden="true" />
             <span className="font-bold">{msg}</span>
-            <Tip label={why}>
-              <button type="button" aria-label={why} className="text-zinc-500 transition hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
-                <HelpCircle size={13} aria-hidden="true" />
-              </button>
-            </Tip>
+            <InfoTip label={why} />
             {isScope ? (
               <button type="button" onClick={() => onNavigate?.('setup', lane)} className="ml-auto font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
                 {t('comments.inbox.reconnect')}

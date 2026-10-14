@@ -130,13 +130,29 @@ describe('PostDetail i18n migration (en)', () => {
     renderDetail();
     // scheduledFor {when} + campaignMeta {campaign}{id} are interpolated, not shown
     // as raw braces. The reused approvals.card.campaignMeta key renders
-    // "Campaign: Spring · p1" - the TYPE is deliberately absent here, because the
-    // Format select below is the editable, authoritative one and repeating it in the
+    // "Campaign: Spring · Spring promo" - the TYPE is deliberately absent here, because
+    // the Format select below is the editable, authoritative one and repeating it in the
     // header was duplication. The approval rows DO show the type (no select there).
     expect(screen.queryByText(/\{when\}/)).not.toBeInTheDocument();
     expect(screen.queryByText(/\{campaign\}/)).not.toBeInTheDocument();
-    expect(screen.getByText(/Campaign: Spring · p1/)).toBeInTheDocument();
-    expect(screen.queryByText(/Campaign: Spring · p1 · Reel/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Campaign: Spring · Spring promo/)).toBeInTheDocument();
+    expect(screen.queryByText(/Campaign: Spring · Spring promo · Reel/)).not.toBeInTheDocument();
+  });
+
+  it('names the post by its title, never its raw id; the ids stay on the tooltip', () => {
+    renderDetail();
+    const meta = screen.getByText(/Campaign: Spring · Spring promo/);
+    // The raw slugs are operator detail: reachable on hover, never the visible identity.
+    expect(meta).toHaveAttribute('title', 'spring / p1');
+    expect(screen.queryByText(/· p1\b/)).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Post Spring promo' })).toBeInTheDocument();
+  });
+
+  it('falls back to the first caption line, and drops the campaign date suffix', () => {
+    renderDetail({ post: { ...basePost, id: 'x-refused', campaign: 'launch-2026-06', title: null, caption: 'Honestly nothing nails all of those.\nSecond line' } });
+    const meta = screen.getByText(/Campaign: Launch · Honestly nothing nails all of those\./);
+    expect(meta).toHaveAttribute('title', 'launch-2026-06 / x-refused');
+    expect(screen.queryByText(/x-refused/)).not.toBeInTheDocument();
   });
 
   it('leaks no raw key id anywhere in the rendered SlideOver', () => {

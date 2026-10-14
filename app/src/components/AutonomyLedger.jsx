@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, HelpCircle, CircleCheck, CircleSlash, AlertCircle, RotateCcw } from 'lucide-react';
-import { useConfig, useAccounts, useAutonomy, usePendpostHealth, useEngage, useActiveClient, saveConfig, fetchConfig, setSchedulerRunning, revokeAutonomy, errText } from '../lib/api.js';
+import { useConfig, useAccounts, useAutonomy, usePendpostHealth, useEngage, useActiveClient, saveConfig, fetchConfig, setSchedulerRunning, revokeAutonomy, engageProbe, errAlert } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { MANUAL_LANES, visiblePlatforms } from '../lib/format.js';
+import { MANUAL_LANES, visiblePlatforms, replyLaneState } from '../lib/format.js';
 import { FIELD, FIELD_ERR } from './ui.jsx';
 import { PILL_BASE, PILL_TONES, BTN_QUIET, TAP_TARGET } from './ui/recipes.js';
 import LaneReadinessLine from './radar/LaneReadinessLine.jsx';
@@ -11,6 +11,7 @@ import { ToggleRow, Switch } from './ui/Switch.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import { Select } from './ui/Select.jsx';
 import { Tip } from './ui/Tooltip.jsx';
+import InfoTip from './ui/InfoTip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 
 // The autonomy ledger (ux-audit 2026-08-04, R7 = AU1 + AU5 + AU4). ONE surface that
@@ -56,13 +57,14 @@ const AUTO_PLATFORMS = [
 ];
 const platformLabel = (id) => AUTO_PLATFORMS.find((p) => p.id === id)?.label || id;
 
-// The state pill: an icon + a word, never colour alone (WCAG 1.4.1). "On" states carry a
-// calm accent tint (the system is acting for you); "off" is muted zinc (nothing to attend
-// to). The exact scope lives in the summary line beside it, not the pill.
+// The state pill: an icon + a word, never colour alone (WCAG 1.4.1). "On" and "off" are both
+// all-clear states, so both are quiet grey (canon Tier 2: colour only on attention; the accent
+// is chrome and never recolours a state). The icon and the word tell them apart. The exact
+// scope lives in the summary line beside it, not the pill.
 function StatePill({ on, label }) {
   const Icon = on ? CircleCheck : CircleSlash;
   return (
-    <span className={`${PILL_BASE} ${on ? PILL_TONES.accent : PILL_TONES.neutral}`}>
+    <span className={`${PILL_BASE} ${on ? PILL_TONES.ok : PILL_TONES.neutral}`}>
       <Icon size={12} aria-hidden="true" />
       {label}
     </span>
@@ -89,7 +91,7 @@ function LedgerRow({ id, title, summary, on, stateLabel, children, inlineControl
           <ChevronDown size={16} aria-hidden="true" className={`shrink-0 text-zinc-500 transition-transform dark:text-zinc-400 ${open ? 'rotate-180' : ''}`} />
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold">{title}</span>
-            <span className="block truncate text-[11px] text-zinc-500 dark:text-zinc-400">{summary}</span>
+            <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{summary}</span>
           </span>
           <StatePill on={on} label={stateLabel} />
         </button>
@@ -131,9 +133,19 @@ function TipLabel({ label, tip }) {
 // account unconfirmed / wrong account) and stays live and truthful in Ready and Cooling down
 // (a cool-down is temporary; the owner's intent for after it is still theirs to set).
 // The state line sits on its own line under the name so the ~30% longer German strings fit.
+// A platform the owner can switch: its readiness (the ONE judge, lib/format.js replyLaneState)
+// is Ready or Cooling down. The same word the state line under it shows.
+const laneActionable = (runtime) => ['ready', 'cooling_down'].includes(replyLaneState(runtime));
+// r5: the platform list is ONE list sorted by that same word (usable first, then what the owner
+// can fix, then the unknowns), each row saying its own word. The old "Not available (n)" fold
+// held rows that were only "Not checked yet", so its title disagreed with its rows.
+const LANE_STATE_ORDER = ['ready', 'cooling_down', 'no_credential', 'not_logged_in', 'wrong_account', 'confirm_handle', 'not_checked', 'checking'];
+const laneRank = (runtime) => {
+  const i = LANE_STATE_ORDER.indexOf(replyLaneState(runtime));
+  return i === -1 ? LANE_STATE_ORDER.length : i;
+};
+
 function PlatformRow({ lane, label, intent, runtime, clientName, onToggle, onNavigate, onRefresh }) {
-  const reason = runtime.reason || 'checking';
-  const usable = runtime.usable === true;
   const handle = intent.handle || runtime.handle || '';
   // The state line + its one recovering action is the shared LaneReadinessLine (same mapping the
   // Radar auto-reply strip renders). The row keeps only the per-lane intent Switch, disabled
@@ -144,7 +156,7 @@ function PlatformRow({ lane, label, intent, runtime, clientName, onToggle, onNav
       <span className="pt-0.5">
         <Switch
           checked={intent.enabled === true}
-          disabled={!usable && reason !== 'cooling_down'}
+          disabled={!laneActionable(runtime)}
           onChange={(next) => onToggle(lane, next)}
           ariaLabel={label}
         />
@@ -188,7 +200,6 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
   // silently reverted under them) and Retry sends exactly that value again.
   const [engagePending, setEngagePending] = useState(null);
   const [engageError, setEngageError] = useState(null);
-  const [notAvailableOpen, setNotAvailableOpen] = useState(false);
   const [draftMax, setDraftMax] = useState('20');
   const [draftMaxError, setDraftMaxError] = useState(null);
   const [error, setError] = useState(null);
@@ -241,7 +252,7 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
     const prior = auto;
     setAuto(next);
     setError(null);
-    writeConfig({ posting: { autoApprove: next } }).then(invalidate).catch((err) => { setAuto(prior); setError(errText(err, t, 'radar.error.save')); });
+    writeConfig({ posting: { autoApprove: next } }).then(invalidate).catch((err) => { setAuto(prior); setError(errAlert(err, t, 'radar.error.save')); });
   };
   // Spec 50 S1: read-modify-write the WHOLE engage object (the autoReply pattern), so a
   // mode change never clobbers the platform list and vice versa. On a refusal the control
@@ -253,17 +264,23 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
     setEngageError(null);
     writeConfig({ posting: { radar: { engage: next } } })
       .then(() => { setEngagePending(null); invalidate(); })
-      .catch((err) => { setEngagePending(next); setEngageError(errText(err, t, 'autonomy.engage.error.save')); });
+      .catch((err) => { setEngagePending(next); setEngageError(errAlert(err, t, 'autonomy.engage.error.save')); });
   };
-  const toggleEngageLane = (lane, next) => saveEngage({
-    ...engage,
-    lanes: { ...engage.lanes, [lane]: { ...(engage.lanes?.[lane] || {}), enabled: next === true } },
-  });
+  const toggleEngageLane = (lane, next) => {
+    saveEngage({
+      ...engage,
+      lanes: { ...engage.lanes, [lane]: { ...(engage.lanes?.[lane] || {}), enabled: next === true } },
+    });
+    // A Ready lane the engine has not probed itself (its credential proven by the Setup probe)
+    // gets that probe on turn-on, exactly as Radar's one-click arm does: the pacer holds every
+    // row until the lane is usable, and nothing else probes it.
+    if (next === true && runtimeLanes[lane]?.usable !== true) engageProbe(lane).then(refreshEngage).catch(() => {});
+  };
 
   const saveRadar = (partial) => {
     if (!config) return;
     setError(null);
-    writeConfig({ posting: { radar: partial } }).then(invalidate).catch((err) => setError(errText(err, t, 'radar.error.save')));
+    writeConfig({ posting: { radar: partial } }).then(invalidate).catch((err) => setError(errAlert(err, t, 'radar.error.save')));
   };
   // Read-modify-write the WHOLE drafting object (the autoReply pattern) so a partial
   // save never clobbers the sibling field. The dashboard writes as the owner, so the
@@ -298,7 +315,7 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
       await revokeAutonomy();
       invalidate();
       queryClient.invalidateQueries({ queryKey: ['plans'] });
-    } catch (err) { setError(errText(err, t, 'radar.error.save')); }
+    } catch (err) { setError(errAlert(err, t, 'radar.error.save')); }
   };
 
   // Draft-approval toggle: turning OFF stops future approvals immediately, then offers to
@@ -354,17 +371,16 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
     const runtime = runtimeLanes[lane] || {};
     const intent = engage.lanes?.[lane] || {};
     return { lane, label: t(`radar.source.${lane}`), intent, runtime };
-  });
-  const laneReady = laneRows.filter((r) => r.runtime.usable === true || r.intent.enabled === true);
-  const laneUnavailable = laneRows.filter((r) => !(r.runtime.usable === true || r.intent.enabled === true));
+  }).sort((a, b) => laneRank(a.runtime) - laneRank(b.runtime));
   const usableCount = laneRows.filter((r) => r.runtime.usable === true).length;
   const enabledCount = laneRows.filter((r) => r.intent.enabled === true).length;
   const engageSummary = !engageOn
     ? t('autonomy.engage.summary.off')
     : engage.paused === true
       ? t('autonomy.engage.summary.paused')
+      // D13: the mode word lives in the pill only, so the summary never repeats it.
       : usableCount === 0
-        ? `${t(`autonomy.engage.mode.${engageMode}`)} · ${t('autonomy.engage.summary.none')}`
+        ? t('autonomy.engage.summary.none')
         : engageMode === 'dry_run'
           ? t('autonomy.engage.summary.dry_run', { n: enabledCount, k: engageToday.wouldPost || 0 })
           : t('autonomy.engage.summary.live', { n: enabledCount, k: engageToday.posted || 0, asks: engageToday.asksOpen || 0 });
@@ -380,9 +396,12 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
         </Tip>
       </div>
 
+      {/* One plain sentence; the server's raw line rides the shared "?" only, never inline. */}
       {error ? (
-        <div role="alert" className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
-          <AlertCircle size={14} aria-hidden="true" />{error}
+        <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
+          <AlertCircle size={14} aria-hidden="true" />
+          <p role="alert">{error.text}</p>
+          <InfoTip label={error.raw} />
         </div>
       ) : null}
 
@@ -442,7 +461,7 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
           single "Turn on auto-reply" control on the Radar page; this row is where the owner
           MANAGES the lanes (connect / check / enable per lane) and the drafting limits. The
           mode Segmented was folded away (one control, one place). */}
-      <LedgerRow id="autonomy-engage" rowRef={engageRowRef} defaultOpen={engageFocused} title={t('autonomy.engage.title')} summary={engageSummary} on={engageOn && engage.paused !== true} stateLabel={t(`autonomy.engage.mode.${engageMode}`)}>
+      <LedgerRow id="autonomy-engage" rowRef={engageRowRef} defaultOpen={engageFocused} title={t('autonomy.engage.title')} summary={engageSummary} on={engageOn && engage.paused !== true} stateLabel={engageOn && engage.paused === true ? t('radar.engage.auto.paused') : t(`autonomy.engage.mode.${engageMode}`)}>
         {/* Radar off: nothing here can act. Say so, with the one link that fixes it. */}
         {!radarOn ? (
           <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
@@ -456,35 +475,24 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
           <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('autonomy.engage.manageHint')}</p>
         )}
         {engageError ? (
-          <p role="alert" className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-red-600 dark:text-red-300">
-            {engageError}
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-red-600 dark:text-red-300">
+            <p role="alert">{engageError.text}</p>
+            <InfoTip label={engageError.raw} />
             <button type="button" onClick={() => saveEngage(engagePending || engage)} className={`${BTN_QUIET} ${TAP_TARGET}`}>
               {t('autonomy.engage.error.retry')}
             </button>
-          </p>
+          </div>
         ) : null}
         {radarOn ? (
           <div className="space-y-1 border-l-2 border-zinc-200/70 pl-3 dark:border-zinc-700/60">
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('autonomy.engage.platforms.label')}</p>
-            {/* ONE column (the canon check's at-scale fix): usable-or-enabled platforms
-                first, everything the system cannot reach folded behind one disclosure that
-                opens IN PLACE, so ten platforms never become a wall of choices. Shown whenever
-                Radar is on (not only when armed), so this is a real "manage lanes" surface the
-                Radar control can deep-link to before auto-reply is even turned on. */}
-            {laneReady.map((r) => (
+            {/* ONE column, sorted by state (r5): every platform shows at once with its own word
+                and its one action, so the Radar deep link lands on what it can act on. Shown
+                whenever Radar is on (not only when armed), so this is a real "manage lanes"
+                surface the Radar control can deep-link to before auto-reply is even on. */}
+            {laneRows.map((r) => (
               <PlatformRow key={r.lane} lane={r.lane} label={r.label} intent={r.intent} runtime={r.runtime} clientName={clientName} onToggle={toggleEngageLane} onNavigate={onNavigate} onRefresh={refreshEngage} />
             ))}
-            {laneUnavailable.length ? (
-              <div>
-                <button type="button" aria-expanded={notAvailableOpen} onClick={() => setNotAvailableOpen((v) => !v)} className={`flex items-center gap-1.5 rounded-lg py-1 text-[11px] font-semibold text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 ${TAP_TARGET}`}>
-                  <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${notAvailableOpen ? 'rotate-180' : '-rotate-90'}`} />
-                  {t('autonomy.engage.lane.notAvailable', { n: laneUnavailable.length })}
-                </button>
-                {notAvailableOpen ? laneUnavailable.map((r) => (
-                  <PlatformRow key={r.lane} lane={r.lane} label={r.label} intent={r.intent} runtime={r.runtime} clientName={clientName} onToggle={toggleEngageLane} onNavigate={onNavigate} onRefresh={refreshEngage} />
-                )) : null}
-              </div>
-            ) : null}
           </div>
         ) : null}
         {/* S7 drafting rows: the DRAFT threshold + per-scan cap, decoupled from the mode
@@ -521,7 +529,7 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
               // Declaring x Enterprise also adds/removes 'x' from the armed radar-reply lanes (now
               // in autoApprove.radarReplies), so a stored lanes:['x'] can never fire into a 403 and
               // enabling the tier surfaces x as an auto-reply lane.
-              writeConfig({ posting: { radar: { xEnterprise: next }, ...(radarReplies.enabled ? { autoApprove: { radarReplies: { ...radarReplies, lanes: next ? [...new Set([...radarReplies.lanes, 'x'])] : radarReplies.lanes.filter((l) => l !== 'x') } } } : {}) } }).then(invalidate).catch((err) => setError(errText(err, t, 'radar.error.save')));
+              writeConfig({ posting: { radar: { xEnterprise: next }, ...(radarReplies.enabled ? { autoApprove: { radarReplies: { ...radarReplies, lanes: next ? [...new Set([...radarReplies.lanes, 'x'])] : radarReplies.lanes.filter((l) => l !== 'x') } } } : {}) } }).then(invalidate).catch((err) => setError(errAlert(err, t, 'radar.error.save')));
             }}
           />
         ) : null}
@@ -538,7 +546,7 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
             ariaLabel={schedulerRunning ? t('sidebar.scheduler.stop') : t('sidebar.scheduler.start')}
             checked={schedulerRunning}
             disabled={!schedulerRunning && setupReady === false}
-            onChange={() => { setSchedulerRunning(!schedulerRunning).then(() => queryClient.invalidateQueries({ queryKey: ['accounts'] })).catch((err) => setError(errText(err, t, 'radar.error.save'))); }}
+            onChange={() => { setSchedulerRunning(!schedulerRunning).then(() => queryClient.invalidateQueries({ queryKey: ['accounts'] })).catch((err) => setError(errAlert(err, t, 'radar.error.save'))); }}
           />
         )}
       />

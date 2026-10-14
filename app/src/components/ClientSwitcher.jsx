@@ -5,6 +5,7 @@ import { useT } from '../lib/i18n.js';
 import { clientAccent, monogram, DEFAULT_ACCENT } from '../lib/theme.js';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { Skeleton, INNER_SURFACE, EYEBROW } from './ui.jsx';
+import InfoTip from './ui/InfoTip.jsx';
 
 // Client logo, or a monogram tile on the client accent when logo is null.
 // Logos are served client-scoped via /media (traversal-rejected server-side).
@@ -51,7 +52,7 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch, all
   const [open, setOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [switching, setSwitching] = useState(null); // id being switched to
-  const [status, setStatus] = useState(null); // { tone: 'ok' | 'error', msg } announced via live region
+  const [status, setStatus] = useState(null); // { tone: 'ok' | 'error', msg, raw? } announced via live region
 
   if (isLoading) {
     return (
@@ -69,11 +70,16 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch, all
   // silently pick a client. Mirrors the campaign-manifest error contract.
   if (isError || data?.error) {
     return (
-      <div role="alert" className="rounded-xl bg-red-500/10 px-3 py-2 text-[11px] font-bold text-red-700 ring-1 ring-red-500/30 dark:text-red-300">
-        {t('clientSwitcher.registryUnreadable')}
-        <span className="block font-medium text-red-700/80 dark:text-red-300/80">
-          {data?.error?.message || error?.message || t('clientSwitcher.registryFallback')}
-        </span>
+      // The registry's own parse or read error (English, often a JSON parser line) rides the
+      // "?" beside the plain cause, never inline and never inside the alert.
+      <div className="flex items-start gap-1 rounded-xl bg-red-500/10 px-3 py-2 ring-1 ring-red-500/30">
+        <div role="alert" className="text-[11px] font-bold text-red-700 dark:text-red-300">
+          {t('clientSwitcher.registryUnreadable')}
+          <span className="block font-medium text-red-700/80 dark:text-red-300/80">
+            {t('clientSwitcher.registryFallback')}
+          </span>
+        </div>
+        <InfoTip label={data?.error?.message || error?.message || null} />
       </div>
     );
   }
@@ -117,11 +123,11 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch, all
       // The switch failed: the operator is still on the prior client. Keep the
       // popover open and surface the failure (role=alert) so they never believe
       // they re-scoped when they did not - the most safety-critical control.
-      // The server's actionable detail rides along; the generic line is the anchor
-      // (and the whole message when the error carries no detail).
+      // The plain sentence is the whole alert; the server's own (English) line rides the
+      // house "?" beside it, never inline.
       const generic = t('clientSwitcher.switchFailed', { name: target?.displayName || t('clientSwitcher.noClient') });
       const detail = typeof err?.message === 'string' ? err.message.trim() : '';
-      setStatus({ tone: 'error', msg: detail ? `${generic} ${detail}` : generic });
+      setStatus({ tone: 'error', msg: generic, raw: detail || null });
     } finally {
       setSwitching(null);
     }
@@ -166,10 +172,11 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch, all
       <PopoverContent align="start" className="w-60" aria-labelledby="clients-switcher-heading">
         <p id="clients-switcher-heading" className={`px-2 pb-1 pt-0.5 ${EYEBROW}`}>{t('clientSwitcher.heading')}</p>
         {status?.tone === 'error' ? (
-          <p className="mb-1 flex items-start gap-1.5 rounded-lg bg-red-500/10 px-2 py-1.5 text-[11px] font-bold text-red-700 dark:text-red-300">
+          <div className="mb-1 flex items-start gap-1.5 rounded-lg bg-red-500/10 px-2 py-1.5 text-[11px] font-bold text-red-700 dark:text-red-300">
             <AlertTriangle size={13} className="mt-px shrink-0" aria-hidden="true" />
             <span>{status.msg}</span>
-          </p>
+            <InfoTip label={status.raw} />
+          </div>
         ) : null}
         {/* Issue 6: the "All projects" mode row, styled like a client row but with
             a LayoutGrid glyph instead of an avatar. Selecting it is PURELY a UI mode

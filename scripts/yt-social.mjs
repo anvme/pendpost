@@ -42,7 +42,7 @@ import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
 import { avSyncBlocker, avSyncBlockRow, findCoverSibling } from '../lib/assets.mjs';
 
@@ -708,7 +708,10 @@ async function cmdSchedule(args) {
     if (!mediaPath) {
       const reason = `media not found (${post.path || post.file}) - re-render or re-attach the video`;
       console.log(`[warn] ${post.id}: ${reason}.`);
-      RUN.results.push(skipRow(post, reason, 'invalid_media'));
+      // media_missing (not invalid_media): a render still being written can appear on
+      // its own, so publish-hold gives it the generic 3-strike cap instead of parking
+      // it on the first strike - the reddit/pinterest media_missing rows' semantics.
+      RUN.results.push(skipRow(post, reason, 'media_missing'));
       continue;
     }
     if (!/\.(mp4|mov)$/i.test(mediaPath)) {
@@ -900,9 +903,13 @@ async function fetchYtWatchTime(token, videoId) {
 // Read-only metrics fetch (Phase E): videos.list part=statistics is the one
 // stable, quota-cheap (1 unit) metrics surface. One batched call for all ids.
 // Writes NOTHING - pendpost stores the envelope in its own state.json.
-async function cmdInsights(args) {
+export async function cmdInsights(args) {
   const { plan } = loadPlan(args.plan);
   const token = await getAccessToken();
+  // Set on the first watch-time 403 (the Analytics API disabled in the GCP project, or the
+  // scope not granted): neither changes between videos, so the remaining videos skip the
+  // call instead of each failing the same way.
+  let watchTimeOff = null;
   const targets = (plan.posts || []).filter((p) => (!args.only || p.id === args.only) && isYouTube(p) && p.ytVideoId);
   if (!targets.length) {
     console.log('[done] insights complete - no posts with a ytVideoId.');
@@ -917,7 +924,7 @@ async function cmdInsights(args) {
     items = data.items || [];
   } catch (err) {
     for (const post of targets) {
-      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'insights', ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) });
     }
     console.error(`[err] videos.list failed - ${err.message}`);
     return;
@@ -939,12 +946,16 @@ async function cmdInsights(args) {
     // Spec 08: watch-time is a SEPARATE, scope-gated call - a missing
     // yt-analytics.readonly grant (or any other failure) degrades silently
     // (P9): the row stays ok:true and the base statistics above still render.
-    try {
-      const extra = await fetchYtWatchTime(token, post.ytVideoId);
-      if (extra) Object.assign(metrics, extra);
-    } catch (err) {
-      if (err.status === 403) console.log(`[warn] ${post.id}: watch-time needs yt-analytics.readonly - base stats only.`);
-      else console.log(`[warn] ${post.id}: watch-time fetch failed - ${String(err.message || err).slice(0, 200)}`);
+    if (!watchTimeOff) {
+      try {
+        const extra = await fetchYtWatchTime(token, post.ytVideoId);
+        if (extra) Object.assign(metrics, extra);
+      } catch (err) {
+        if (err.status === 403) {
+          watchTimeOff = String(err.message || err);
+          console.log(`[warn] ${post.id}: watch-time unavailable (Analytics API disabled or scope missing) - base stats only for the remaining videos.`);
+        } else console.log(`[warn] ${post.id}: watch-time fetch failed - ${String(err.message || err).slice(0, 200)}`);
+      }
     }
     RUN.results.push({ postId: post.id, platform: 'youtube', action: 'insights', ok: true, id: post.ytVideoId, metrics });
     console.log(`[ok] ${post.id}: YT ${JSON.stringify(metrics)}`);
@@ -981,7 +992,7 @@ async function cmdDemographics() {
   try {
     token = await getAccessToken();
   } catch (err) {
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) }));
     return;
   }
   const end = new Date();
@@ -1028,7 +1039,7 @@ async function cmdDemographics() {
       console.log('[warn] demographics: yt-analytics.readonly scope not granted - no audience data available yet.');
       return;
     }
-    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) }));
     console.log(`[warn] demographics failed: ${String(err.message || err).slice(0, 200)}`);
   }
 }
@@ -1926,7 +1937,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }

@@ -27,7 +27,7 @@
  *   schedule       --plan <post-plan.json> [--only <postId>] [--dry-run]
  *   publish-due    --plan <post-plan.json> [--only <postId>] [--dry-run]
  *   set-thumbnail  --plan <post-plan.json> [--only <postId>] [--dry-run]   (post-hoc FB reel covers; IG is container-creation-only)
- *   insights       --plan <post-plan.json> [--only <postId>] --json          (read-only IG/FB metrics, defensive metric fallback)
+ *   insights       --plan <post-plan.json> [--only <postId>] [--skip-gone <postId/platform,...>] --json   (read-only IG/FB metrics, defensive metric fallback)
  *   demographics   --plan <post-plan.json> --json          (account-scoped IG follower age/gender/geo breakdown; needs instagram_business_manage_insights)
  *   status         --plan <post-plan.json>
  *   delete         --id <fbPostId>
@@ -42,13 +42,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand, platformEnabled } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { handOffAfterCeremony } from '../lib/cli-cloud-handoff.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
 import { avSyncBlocker, avSyncBlockRow, probeMedia, findCoverSibling } from '../lib/assets.mjs';
 import { effectivePublicUrl, effectiveSlideUrl, classifyMediaProbe, probeMediaUrl, deadMediaUrlDiagnosis } from '../lib/public-media.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
-import { envPath } from '../lib/util.mjs';
+import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -165,15 +166,26 @@ async function graph(method, pathname, params = {}, { base = GRAPH, form = null 
 
 async function igResumableUpload(containerId, filePath, token) {
   const buf = fs.readFileSync(filePath);
-  const res = await fetch(`${RUPLOAD}/${containerId}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `OAuth ${token}`,
-      offset: '0',
-      file_size: String(buf.length),
-    },
-    body: buf,
-  });
+  let res;
+  try {
+    res = await fetch(`${RUPLOAD}/${containerId}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `OAuth ${token}`,
+        offset: '0',
+        file_size: String(buf.length),
+      },
+      body: buf,
+    });
+  } catch (cause) {
+    // A bare network throw reads "fetch failed", the same as a media_publish one. Name the
+    // upload step + container so the failure row says WHICH step dropped. The message keeps
+    // "fetch failed", so lib/publish-hold.mjs isTransientFailure still retries it.
+    const why = cause?.cause?.code || cause?.cause?.message || cause?.message || String(cause);
+    const err = new Error(`rupload ${containerId}: fetch failed (${why})`, { cause });
+    err.retriable = true;
+    throw err;
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error || data.success === false) {
     const err = new Error(`rupload ${containerId}: HTTP ${res.status} ${JSON.stringify(data)}`);
@@ -1325,7 +1337,10 @@ async function fetchIgInsights(mediaId, token) {
     try {
       const metrics = insightsToMetrics(await graph('GET', `/${mediaId}/insights`, { metric, access_token: token }));
       if (Object.keys(metrics).length) return metrics;
-    } catch { /* metric set not supported for this media - try the next */ }
+    } catch (err) {
+      if (metaPostGone(err)) throw err; // the media is gone: no other metric set will find it
+      /* metric set not supported for this media - try the next */
+    }
   }
   // Plain count fields exist on every media object - the floor, never empty.
   const media = await graph('GET', `/${mediaId}`, { fields: 'like_count,comments_count', access_token: token });
@@ -1337,7 +1352,10 @@ async function fetchFbReelInsights(videoId, token) {
     try {
       const metrics = insightsToMetrics(await graph('GET', `/${videoId}/video_insights`, { metric, access_token: token }));
       if (Object.keys(metrics).length) return metrics;
-    } catch { /* try the next set */ }
+    } catch (err) {
+      if (metaPostGone(err)) throw err; // surface the deletion, not a generic metric-set miss
+      /* try the next set */
+    }
   }
   throw new Error(`no supported video_insights metric set for ${videoId}`);
 }
@@ -1345,30 +1363,67 @@ async function fetchFbReelInsights(videoId, token) {
 async function cmdInsights(args) {
   const { plan } = loadPlan(args.plan);
   const pageToken = requireEnv('META_PAGE_TOKEN');
+  // A permission (#10/#200) or token (#190) refusal is the same for every post: the
+  // FIRST one ends the loop with one row, instead of failing every post the same way.
+  // A per-post problem (a deleted media, #100) keeps going.
+  const failRow = (post, platform, err) => {
+    const stop = metaInsightsStopClass(err);
+    RUN.results.push({
+      postId: post.id, platform, action: 'insights', ok: false,
+      ...(stop === 'needs_scope' ? { error: 'needs_scope' } : {}),
+      errorCode: err.fbCode || 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300),
+    });
+    console.log(`[warn] ${post.id}: ${platform === 'instagram' ? 'IG' : 'FB'} insights ${stop ? `stopped (${stop}) - the remaining posts would fail the same way` : 'failed'} - ${err.message}`);
+    return Boolean(stop);
+  };
+  // A media deleted on the platform but still in the plan (#100 "does not exist") is a
+  // per-post fact: one post_gone row, which pendpost records on that post's insights entry
+  // and passes back here as --skip-gone (postId/platform, comma-separated) on later sweeps.
+  const goneRow = (post, platform, id, err) => {
+    RUN.results.push({ postId: post.id, platform, action: 'insights', ok: false, error: 'post_gone', id, errorCode: err.fbCode, errorMessage: err.message.slice(0, 300) });
+    console.log(`[info] ${post.id}: ${platform === 'instagram' ? 'IG' : 'FB'} media ${id} no longer exists on the platform - recorded as gone.`);
+  };
+  const skipGone = new Set(typeof args['skip-gone'] === 'string' ? args['skip-gone'].split(',').map((x) => x.trim()).filter(Boolean) : []);
   for (const post of plan.posts || []) {
     if (args.only && post.id !== args.only) continue;
-    if (post.igMediaId) {
+    if (post.igMediaId && !skipGone.has(`${post.id}/instagram`)) {
       try {
         const metrics = await fetchIgInsights(post.igMediaId, pageToken);
         RUN.results.push({ postId: post.id, platform: 'instagram', action: 'insights', ok: true, id: post.igMediaId, metrics });
         console.log(`[ok] ${post.id}: IG ${JSON.stringify(metrics)}`);
       } catch (err) {
-        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'insights', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
-        console.log(`[warn] ${post.id}: IG insights failed - ${err.message}`);
+        if (metaPostGone(err)) goneRow(post, 'instagram', post.igMediaId, err);
+        else if (failRow(post, 'instagram', err)) break;
       }
     }
-    if (post.fbReelId) {
+    if (post.fbReelId && !skipGone.has(`${post.id}/facebook`)) {
       try {
         const metrics = await fetchFbReelInsights(post.fbReelId, pageToken);
         RUN.results.push({ postId: post.id, platform: 'facebook', action: 'insights', ok: true, id: post.fbReelId, metrics });
         console.log(`[ok] ${post.id}: FB ${JSON.stringify(metrics)}`);
       } catch (err) {
-        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'insights', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
-        console.log(`[warn] ${post.id}: FB insights failed - ${err.message}`);
+        if (metaPostGone(err)) goneRow(post, 'facebook', post.fbReelId, err);
+        else if (failRow(post, 'facebook', err)) break;
       }
     }
   }
   console.log(`[done] insights complete - ${RUN.results.filter((r) => r.ok).length} fetched.`);
+}
+
+// Graph #100 "Unsupported get request. Object with ID '...' does not exist": the media was
+// deleted on the platform. Per-post, never a lane failure. Other #100s (invalid parameter)
+// are not deletions.
+export function metaPostGone(err) {
+  return err?.fbCode === 100 && /does not exist/i.test(String(err?.message || ''));
+}
+
+// The Graph refusals that are the same for every post: #10 / #200 (permission not
+// granted) -> 'needs_scope', #190 (invalid or expired token) -> 'token', else null.
+export function metaInsightsStopClass(err) {
+  const code = err?.fbCode;
+  if (code === 10 || code === 200) return 'needs_scope';
+  if (code === 190) return 'token';
+  return null;
 }
 
 // Parse the IG follower_demographics total_value.breakdowns array into
@@ -1420,7 +1475,7 @@ async function cmdDemographics() {
       console.log('[warn] demographics: instagram_business_manage_insights Advanced Access not granted - no audience data available yet.');
       return;
     }
-    RUN.results.push(accountRow({ ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) }));
+    RUN.results.push(accountRow({ ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: describeFetchFailure(err).slice(0, 300) }));
     console.log(`[warn] demographics failed: ${err.message}`);
   }
 }
@@ -1641,6 +1696,8 @@ async function main() {
     process.exit(2);
   }
   await cmd(args);
+  // A hand-run ceremony hands the new sign-in to the running pendpost (recheck + cloud reseal).
+  await handOffAfterCeremony({ command: args._[0], lane: 'meta', results: RUN.results });
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
@@ -1655,7 +1712,7 @@ async function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (err) => {
     console.error('[err]', err.message || err);
-    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: describeFetchFailure(err).slice(0, 300), ...RUN })}\n`);
     process.exit(1);
   });
 }
@@ -1663,4 +1720,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 // Test-only export: cmdDelete + RUN are exported so a delete-idempotency test can
 // drive the real 100/33-swallow logic in-process against a stubbed global.fetch,
 // with no network/credentials/subprocess - mirrors yt-social.mjs's cmdDelete export.
-export { cmdDelete, RUN };
+export { cmdDelete, cmdInsights, RUN, igResumableUpload };

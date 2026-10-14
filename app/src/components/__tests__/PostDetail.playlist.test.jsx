@@ -194,7 +194,10 @@ describe('PostDetail "Add to playlist" action (spec 15)', () => {
     // switched to the existing-playlist path with the just-created playlist selected.
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(addMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByText('network blip')).toBeInTheDocument());
+    // The raw line is never inline: the plain sentence is the alert, the raw rides the "?".
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('That did not work. Please try again.'));
+    expect(screen.queryByText('network blip', { ignore: '.sr-only' })).toBeNull();
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('network blip');
     const select = screen.getByLabelText('Choose a playlist …');
     expect(select).toHaveValue('pl_new');
     expect(screen.getByRole('option', { name: 'Fresh Series' })).toBeInTheDocument();
@@ -216,8 +219,23 @@ describe('PostDetail "Add to playlist" action (spec 15)', () => {
     await openMenu(user);
     await user.click(screen.getByText('Add to playlist'));
     expect(screen.getByText('Could not load playlists.')).toBeInTheDocument();
-    expect(screen.getByText('token refresh failed')).toBeInTheDocument();
+    // The engine's English line is not inline: a known cause says its plain sentence,
+    // and the raw line rides the "?" only.
+    expect(screen.getByText('The connection has expired. Reconnect YouTube.')).toBeInTheDocument();
+    expect(screen.queryByText('token refresh failed', { ignore: '.sr-only' })).toBeNull();
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('token refresh failed');
     expect(screen.queryByText('No playlists yet.')).not.toBeInTheDocument();
+  });
+
+  it('a message-less add failure still says the plain sentence', async () => {
+    addMock.mockRejectedValueOnce(new Error());
+    const user = userEvent.setup();
+    renderDetail(publishedYoutubePost);
+    await openMenu(user);
+    await user.click(screen.getByText('Add to playlist'));
+    await user.selectOptions(screen.getByLabelText('Choose a playlist …'), 'pl_a');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('That did not work. Please try again.'));
   });
 
   it('shows the empty-state copy (only "New playlist…") when the channel has none', async () => {
